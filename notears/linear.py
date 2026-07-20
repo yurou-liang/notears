@@ -4,6 +4,9 @@ import scipy.optimize as sopt
 from scipy.special import expit as sigmoid
 
 
+def softplus_beta(x, beta=10.0):
+    return np.log1p(np.exp(beta * x)) / beta
+
 def notears_linear(X, lambda1, loss_type, max_iter=100, h_tol=1e-8, rho_max=1e+16, w_threshold=0.3):
     """Solve min_W L(W; X) + lambda1 ‖W‖_1 s.t. h(W) = 0 using augmented Lagrangian.
 
@@ -47,6 +50,85 @@ def notears_linear(X, lambda1, loss_type, max_iter=100, h_tol=1e-8, rho_max=1e+1
         #     h = (E.T * M).sum() - d
         G_h = E.T * W * 2
         return h, G_h
+
+    def _forbid_edges(W, edge_pairs):
+        """forbid edges from the list of index pairs.
+        
+        Args:
+            W (np.ndarray): [d, d] weight matrix
+            pairs (list): List of (i, j) edge pairs
+            
+        Returns:
+            float: Values Sum of W[i, j] for each (i, j) pair
+        """
+        return np.sum([(W * W)[i, j] for i, j in edge_pairs]) / len(edge_pairs)
+    
+    def _exist_edges(W, w_thres, edge_pairs):
+        """Return a vector of edge residuals for the given index pairs.
+        
+        Args:
+            W (np.ndarray): [d, d] weight matrix
+            w_thres (float): threshold for edge existence
+            pairs (list): List of (i, j) edge pairs
+            
+        Returns:
+            np.ndarray (1D): Vector of W[i, j] - w_thres for each (i, j) pair
+        """
+        return np.array([W[i, j] - w_thres for i, j in edge_pairs])
+    
+    def _forbid_paths(W, path_pairs):
+        """forbid paths from the list of index pairs.
+        
+        Args:
+            W (np.ndarray): [d, d] weight matrix
+            paths (list): List of paths pairs (each pair is the beginning and end of the path)
+
+        Returns:
+            float: Sum of exponential weights along each path
+        """
+
+        E = slin.expm(W * W)
+        return np.sum([E[i, j] for i, j in path_pairs]) / len(path_pairs)
+    
+    def _exist_paths(W, w_thres, path_pairs):
+        """Return a vector of path residuals for the given index pairs.
+        
+        Args:
+            W (np.ndarray): [d, d] weight matrix
+            paths (list): List of paths pairs (each pair is the beginning and end of the path)
+
+        Returns:
+            np.ndarray (1D): Vector of path (exponential) weights residuals for each (i, j) pair
+        """
+        A = softplus_beta((W*W) - w_thres*w_thres)
+        return np.array([slin.expm(A)[i, j] for i, j in path_pairs])
+    
+    def _forbid_trek(W, trek_pairs):
+        """forbid treks from the list of index pairs.
+        
+        Args:
+            W (np.ndarray): [d, d] weight matrix
+            trek_pairs (list): List of trek pairs (each pair is the both ends of the trek)
+
+        Returns:
+            float: Sum of trek (exponential) weights along each trek
+        """
+        E = slin.expm(W * W)
+        return np.sum([(E.T@E)[i, j] for i, j in trek_pairs]) / len(trek_pairs)
+    
+    def _exist_trek(W, w_thres, trek_pairs):
+        """Return a vector of trek residuals for the given index pairs.
+        
+        Args:
+            W (np.ndarray): [d, d] weight matrix
+            w_thres (float): threshold for trek existence
+            trek_pairs (list): List of trek pairs (each pair is the both ends of the trek)
+
+        Returns:
+            np.ndarray (1D): Vector of trek (exponential) weights residuals for each (i, j) pair
+        """
+        A = slin.expm(softplus_beta((W*W) - w_thres*w_thres))
+        return np.array([(A.T@A)[i, j] for i, j in trek_pairs])
 
     def _adj(w):
         """Convert doubled variables ([2 d^2] array) back to original variables ([d, d] matrix)."""
