@@ -1,11 +1,118 @@
 import numpy as np
 import scipy.linalg as slin
 import scipy.optimize as sopt
+from scipy.optimize import check_grad
 from scipy.special import expit as sigmoid
 
 
 def softplus_beta(x, beta=10.0):
     return np.log1p(np.exp(beta * x)) / beta
+
+def _forbid_paths(W, path_pairs):
+        """forbid paths from the list of index pairs.
+        
+        Args:
+            W (np.ndarray): [d, d] weight matrix
+            paths (list): List of paths pairs (each pair is the beginning and end of the path)
+
+        Returns:
+            float: Sum of exponential weights along each path
+        """
+
+        E = slin.expm(W * W)
+        M = np.zeros_like(W, dtype=np.result_type(W, np.float64))
+        scale = len(path_pairs)
+
+        for i, j in path_pairs:
+            M[i, j] += 1.0
+
+        A = W * W
+        grad_A = slin.expm_frechet(
+        A.T,
+        M,
+        compute_expm=False,
+        ) / scale
+
+        grad_W = 2.0 * W * grad_A 
+        return np.sum([E[i, j] for i, j in path_pairs]) / len(path_pairs), grad_W.reshape(-1)
+
+def _forbid_edges(W, edge_pairs):
+        """forbid edges from the list of index pairs.
+        
+        Args:
+            W (np.ndarray): [d, d] weight matrix
+            pairs (list): List of (i, j) edge pairs
+            
+        Returns:
+            float: Values Sum of W[i, j] for each (i, j) pair
+        """
+        e = np.sum([(W * W)[i, j] for i, j in edge_pairs]) / len(edge_pairs)
+        G_e = np.zeros_like(W)
+        for i, j in edge_pairs:
+            G_e[i, j] = 2 * W[i, j]
+        G_e = G_e / len(edge_pairs)
+        return e, G_e.reshape(-1)
+
+def _exist_edges(W, w_thres, edge_pairs):
+        """Return a vector of edge residuals for the given index pairs.
+        
+        Args:
+            W (np.ndarray): [d, d] weight matrix
+            w_thres (float): threshold for edge existence
+            pairs (list): List of (i, j) edge pairs
+            
+        Returns:
+            np.ndarray (1D): Vector of W[i, j] - w_thres for each (i, j) pair
+        """
+        residuals = np.array([W[i, j] - w_thres for i, j in edge_pairs])
+        d = W.shape[0]
+        jacobian = np.zeros((len(edge_pairs), d * d), dtype=float)
+        for k, (i, j) in enumerate(edge_pairs):
+            jacobian[k, i * d + j] = 1.0
+        return residuals, jacobian
+
+def _exist_paths(W, w_thres, path_pairs, beta=10.0):
+    X = W * W - w_thres * w_thres
+    A = softplus_beta(X, beta)
+    E = slin.expm(A)
+
+    residuals = np.array([E[i, j] for i, j in path_pairs])
+
+    dA_dX = sigmoid(beta * X)          # derivative of softplus_beta
+    dX_dW = 2.0 * W                    # derivative of W^2
+    J = np.zeros((len(path_pairs), W.size), dtype=float)
+
+    for k, (i, j) in enumerate(path_pairs):
+        M = np.zeros_like(W, dtype=np.float64)
+        M[i, j] = 1.0
+        grad_A = slin.expm_frechet(A.T, M, compute_expm=False)
+        J[k, :] = (dX_dW * dA_dX * grad_A).reshape(-1)
+
+    return residuals, J
+
+def _forbid_trek(W, trek_pairs):
+    """forbid treks from the list of index pairs.
+    
+    Args:
+        W (np.ndarray): [d, d] weight matrix
+        trek_pairs (list): List of trek pairs (each pair is the both ends of the trek)
+
+    Returns:
+        tuple: (value, grad_W) where value is the scalar objective and grad_W is the gradient matrix
+    """
+    E = slin.expm(W * W)
+    scale = len(trek_pairs)
+    value = np.sum([(E.T @ E)[i, j] for i, j in trek_pairs]) / scale
+
+    M = np.zeros_like(W, dtype=np.result_type(W, np.float64))
+    for i, j in trek_pairs:
+        M[i, j] = 1.0
+
+    A = W * W
+    G_E = (E @ M.T + E @ M) / scale
+    grad_A = slin.expm_frechet(A.T, G_E, compute_expm=False)
+    grad_W = 2.0 * W * grad_A
+    return value, grad_W.reshape(-1)
 
 def notears_linear(X, lambda1, loss_type, max_iter=100, h_tol=1e-8, rho_max=1e+16, w_threshold=0.3):
     """Solve min_W L(W; X) + lambda1 ‖W‖_1 s.t. h(W) = 0 using augmented Lagrangian.
@@ -61,8 +168,13 @@ def notears_linear(X, lambda1, loss_type, max_iter=100, h_tol=1e-8, rho_max=1e+1
         Returns:
             float: Values Sum of W[i, j] for each (i, j) pair
         """
-        return np.sum([(W * W)[i, j] for i, j in edge_pairs]) / len(edge_pairs)
-    
+        e = np.sum([(W * W)[i, j] for i, j in edge_pairs]) / len(edge_pairs)
+        G_e = np.zeros_like(W)
+        for i, j in edge_pairs:
+            G_e[i, j] = 2 * W[i, j]
+        G_e = G_e / len(edge_pairs)
+        return e, G_e.reshape(-1)
+
     def _exist_edges(W, w_thres, edge_pairs):
         """Return a vector of edge residuals for the given index pairs.
         
@@ -74,7 +186,11 @@ def notears_linear(X, lambda1, loss_type, max_iter=100, h_tol=1e-8, rho_max=1e+1
         Returns:
             np.ndarray (1D): Vector of W[i, j] - w_thres for each (i, j) pair
         """
-        return np.array([W[i, j] - w_thres for i, j in edge_pairs])
+        i = np.array([W[i, j] - w_thres for i, j in edge_pairs])
+        G_i = np.zeros_like(W)
+        for i, j in edge_pairs:
+            G_i[i, j] = 1.0
+        return i, G_i
     
     def _forbid_paths(W, path_pairs):
         """forbid paths from the list of index pairs.
@@ -88,7 +204,21 @@ def notears_linear(X, lambda1, loss_type, max_iter=100, h_tol=1e-8, rho_max=1e+1
         """
 
         E = slin.expm(W * W)
-        return np.sum([E[i, j] for i, j in path_pairs]) / len(path_pairs)
+        M = np.zeros_like(W, dtype=np.result_type(W, np.float64))
+        scale = len(path_pairs)
+
+        for i, j in path_pairs:
+            M[i, j] += 1.0
+
+        A = W * W
+        grad_A = slin.expm_frechet(
+        A.T,
+        M,
+        compute_expm=False,
+        ) / scale
+
+        grad_W = 2.0 * W * grad_A 
+        return np.sum([E[i, j] for i, j in path_pairs]) / len(path_pairs), grad_W
     
     def _exist_paths(W, w_thres, path_pairs):
         """Return a vector of path residuals for the given index pairs.
@@ -111,10 +241,21 @@ def notears_linear(X, lambda1, loss_type, max_iter=100, h_tol=1e-8, rho_max=1e+1
             trek_pairs (list): List of trek pairs (each pair is the both ends of the trek)
 
         Returns:
-            float: Sum of trek (exponential) weights along each trek
+            tuple: (value, grad_W) where value is the scalar objective and grad_W is the gradient matrix
         """
         E = slin.expm(W * W)
-        return np.sum([(E.T@E)[i, j] for i, j in trek_pairs]) / len(trek_pairs)
+        scale = len(trek_pairs)
+        value = np.sum([(E.T @ E)[i, j] for i, j in trek_pairs]) / scale
+
+        M = np.zeros_like(W, dtype=np.result_type(W, np.float64))
+        for i, j in trek_pairs:
+            M[i, j] = 1.0
+
+        A = W * W
+        G_E = (E @ M.T + E @ M) / scale
+        grad_A = slin.expm_frechet(A.T, G_E.T, compute_expm=False).T
+        grad_W = 2.0 * W * grad_A
+        return value, grad_W
     
     def _exist_trek(W, w_thres, trek_pairs):
         """Return a vector of trek residuals for the given index pairs.
@@ -168,21 +309,54 @@ def notears_linear(X, lambda1, loss_type, max_iter=100, h_tol=1e-8, rho_max=1e+1
     return W_est
 
 
+# if __name__ == '__main__':
+#     from notears import utils
+#     utils.set_random_seed(1)
+
+#     n, d, s0, graph_type, sem_type = 100, 20, 20, 'ER', 'gauss'
+#     B_true = utils.simulate_dag(d, s0, graph_type)
+#     W_true = utils.simulate_parameter(B_true)
+#     np.savetxt('W_true.csv', W_true, delimiter=',')
+
+#     X = utils.simulate_linear_sem(W_true, n, sem_type)
+#     np.savetxt('X.csv', X, delimiter=',')
+
+#     W_est = notears_linear(X, lambda1=0.1, loss_type='l2')
+#     assert utils.is_dag(W_est)
+#     np.savetxt('W_est.csv', W_est, delimiter=',')
+#     acc = utils.count_accuracy(B_true, W_est != 0)
+#     print(acc)
+
 if __name__ == '__main__':
-    from notears import utils
-    utils.set_random_seed(1)
+    d = 4
+    W = np.random.randn(d, d)
+    path_pairs = [(0, 1), (1, 2), (2, 3)]
+    w_threshold = 0.0
 
-    n, d, s0, graph_type, sem_type = 100, 20, 20, 'ER', 'gauss'
-    B_true = utils.simulate_dag(d, s0, graph_type)
-    W_true = utils.simulate_parameter(B_true)
-    np.savetxt('W_true.csv', W_true, delimiter=',')
+    # def f(w):
+    #     return _forbid_paths_obj(w.reshape(d, d), path_pairs)
 
-    X = utils.simulate_linear_sem(W_true, n, sem_type)
-    np.savetxt('X.csv', X, delimiter=',')
+    # def grad(w):
+    #     return _forbid_paths_grad(w.reshape(d, d), path_pairs).reshape(-1)
 
-    W_est = notears_linear(X, lambda1=0.1, loss_type='l2')
-    assert utils.is_dag(W_est)
-    np.savetxt('W_est.csv', W_est, delimiter=',')
-    acc = utils.count_accuracy(B_true, W_est != 0)
-    print(acc)
+    def f(w):
+        residuals, _ = _forbid_trek(w.reshape(d, d), path_pairs)
+        return residuals
+
+    def grad(w):
+        _, jacobian = _forbid_trek(w.reshape(d, d), path_pairs)
+        return jacobian
+
+    x0 = W.reshape(-1)
+
+    print("x0:", x0.shape)
+    print("f:", np.shape(f(W)))
+    print("grad:", grad(x0).shape)
+    err = check_grad(f, grad, W.reshape(-1))
+    # err_alt = check_grad(f, grad_alt, W.reshape(-1))
+    print('check_grad with A.T transpose:', err)
+    # print('check_grad without transpose:', err_alt)
+    # print('f(W) =', f(W.reshape(-1)))
+    # print('norm grad transpose:', np.linalg.norm(grad(W.reshape(-1))))
+    # print('norm grad no-transpose:', np.linalg.norm(grad_alt(W.reshape(-1))))
 
