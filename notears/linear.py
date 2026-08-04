@@ -218,7 +218,7 @@ def combined_inequality_constraints(w, w_threshold, exist_edge_pairs, exist_path
 def softplus(x, sharpness=10.0):
     return np.logaddexp(0.0, sharpness * x) / sharpness
 
-def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, h_tol=1e-8, rho_max=1e+16, w_threshold=0.3, sharpness=10.0):
+def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, violation_tol=1e-8, rho_max=1e+16, w_threshold=0.3, sharpness=10.0, epsilon=1e-1):
     """Solve min_W L(W; X) + lambda1 ‖W‖_1 s.t. h(W) = 0 using augmented Lagrangian.
 
     Args:
@@ -227,10 +227,11 @@ def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, h_
         loss_type (str): l2, logistic, poisson
         prior_knowledge (dict): prior knowledge
         max_iter (int): max num of dual ascent steps
-        h_tol (float): exit if |h(w_est)| <= htol
+        violation_tol (float): exit if |violation(w_est)| <= violation_tol
         rho_max (float): exit if rho >= rho_max
         w_threshold (float): drop edge if |weight| < threshold
         sharpness (float): softplus sharpness parameter
+        epsilon (float): inequality constraint tolerance
 
     Returns:
         W_est (np.ndarray): [d, d] estimated DAG
@@ -541,7 +542,7 @@ def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, h_
     #     g_obj = np.concatenate((G_smooth + lambda1, - G_smooth + lambda1), axis=None)
     #     return obj, g_obj
 
-    def _func(w, epsilon=1e-1):
+    def _func(w):
         """Evaluate value and gradient of augmented Lagrangian for doubled variables ([2 d^2] array)."""
         W = _adj(w)
         loss, G_loss = _loss(W)
@@ -550,13 +551,26 @@ def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, h_
         c_i = epsilon - i_value  
         G_i = -i_grad
         z = beta + rho * c_i
-        value = softplus(z, sharpness)
-        dvalue_dz = sigmoid(sharpness * z)
-        obj = loss + 0.5 * rho * np.sum(c_e**2) + alpha @ c_e + ( 1 / (2 * rho) ) * (np.sum(value**2) - np.sum(beta**2)) + lambda1 * w.sum()
-        G_smooth = G_loss.reshape(-1) + G_e.T @ (alpha + rho * c_e) + G_i.T @ (value * dvalue_dz)
+        # value = softplus(z, sharpness)
+        # dvalue_dz = sigmoid(sharpness * z)
+        positive_part = np.maximum(z, 0.0)
+        obj = loss + 0.5 * rho * np.sum(c_e**2) + alpha @ c_e + ( 1 / (2 * rho) ) * (np.sum(positive_part**2) - np.sum(beta**2)) + lambda1 * w.sum()
+        G_smooth = G_loss.reshape(-1) + G_e.T @ (alpha + rho * c_e) + G_i.T @ positive_part
         g_obj = np.concatenate((G_smooth + lambda1, - G_smooth + lambda1), axis=None)
         return obj, g_obj
 
+    def _violation(c_e, c_i):
+        e = (
+            np.linalg.norm(c_e, ord=np.inf)
+            if c_e.size
+            else 0.0
+        )
+        i = (
+            np.linalg.norm(np.maximum(c_i, 0.0), ord=np.inf)
+            if c_i.size
+            else 0.0
+        )
+        return max(e, i)
     
     n, d = X.shape
     w_est = np.zeros(2 * d * d)  # double w_est into (w_pos, w_neg)
@@ -572,25 +586,36 @@ def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, h_
     inequality_len = len(exist_edge_pairs) + len(exist_path_pairs) + len(exist_trek_pairs)
     alpha = np.zeros(equality_len, dtype=float)
     beta = np.zeros(inequality_len, dtype=float)
-    h = np.inf
+    violation = np.inf
 
     bnds = [(0, 0) if i == j else (0, None) for _ in range(2) for i in range(d) for j in range(d)]
 
     if loss_type == 'l2':
         X = X - np.mean(X, axis=0, keepdims=True)
     for _ in range(max_iter):
-        w_new, h_new = None, None
+        w_new, c_e_new, c_i_new = None, None, None
         while rho < rho_max:
             sol = sopt.minimize(_func, w_est, method='L-BFGS-B', jac=True, bounds=bnds)
             w_new = sol.x
-            h_new, _ = _h(_adj(w_new))
-            if h_new > 0.25 * h:
+            c_e_new, _ = combined_equality_constraints(_adj(w_new))
+            i_value_new, _ = combined_inequality_constraints(_adj(w_new))
+            c_i_new = epsilon - i_value_new  
+            ###############################
+            print("equality constraints:", c_e_new)
+            print(
+                "equality absolute values:",
+                np.abs(c_e_new),
+            )
+            ###############################
+            violation_new = _violation(c_e_new, c_i_new)
+            if violation_new > 0.25 * violation:
                 rho *= 10
             else:
                 break
-        w_est, h = w_new, h_new
-        alpha += rho * h
-        if h <= h_tol or rho >= rho_max:
+        w_est, violation = w_new, violation_new
+        alpha += rho * c_e_new
+        beta = np.maximum( beta + rho * c_i_new, 0.0)
+        if violation <= violation_tol or rho >= rho_max:
             break
     W_est = _adj(w_est)
     W_est[np.abs(W_est) < w_threshold] = 0
@@ -643,10 +668,9 @@ if __name__ == '__main__':
         rho = 1.0
         alpha = np.random.uniform(0, 1, size=k)
         z = beta + rho * c_i
-        value = softplus(z, 10.0)
-        dvalue_dz = sigmoid(10.0 * z)
-        obj = 0.5 * rho * np.sum(c_e**2) + alpha @ c_e + ( 1 / (2 * rho) ) * (np.sum(value**2) - np.sum(beta**2)) 
-        g_obj = G_e.T @ (alpha + rho * c_e) + G_i.T @ (value * dvalue_dz)
+        positive_part = np.maximum(z, 0.0)
+        obj = 0.5 * rho * np.sum(c_e**2) + alpha @ c_e + ( 1 / (2 * rho) ) * (np.sum(positive_part ** 2) - np.sum(beta**2)) 
+        g_obj = G_e.T @ (alpha + rho * c_e) + G_i.T @ positive_part
         return obj, g_obj
     
     def f(w):
