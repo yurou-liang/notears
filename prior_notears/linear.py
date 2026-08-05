@@ -560,18 +560,38 @@ def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, vi
         g_obj = np.concatenate((G_smooth + lambda1, - G_smooth + lambda1), axis=None)
         return obj, g_obj
 
+    # def _violation(c_e, c_i):
+    #     e = (
+    #         np.linalg.norm(c_e, ord=np.inf)
+    #         if c_e.size
+    #         else 0.0
+    #     )
+    #     i = (
+    #         np.linalg.norm(np.maximum(c_i, 0.0), ord=np.inf)
+    #         if c_i.size
+    #         else 0.0
+    #     )
+    #     return max(e, i)
+
     def _violation(c_e, c_i):
-        e = (
-            np.linalg.norm(c_e, ord=np.inf)
-            if c_e.size
-            else 0.0
+        active_i = np.maximum(c_i, 0.0)
+
+        all_violations = np.concatenate([
+            np.asarray(c_e).reshape(-1),
+            active_i.reshape(-1),
+        ])
+
+        l2_violation = np.linalg.norm(
+            all_violations,
+            ord=2,
         )
-        i = (
-            np.linalg.norm(np.maximum(c_i, 0.0), ord=np.inf)
-            if c_i.size
-            else 0.0
+
+        max_violation = np.linalg.norm(
+            all_violations,
+            ord=np.inf,
         )
-        return max(e, i)
+
+        return l2_violation, max_violation
     
     n, d = X.shape
     w_est = np.zeros(2 * d * d)  # double w_est into (w_pos, w_neg)
@@ -587,7 +607,7 @@ def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, vi
     inequality_len = len(exist_edge_pairs) + len(exist_path_pairs) + len(exist_trek_pairs)
     alpha = np.zeros(equality_len, dtype=float)
     beta = np.zeros(inequality_len, dtype=float)
-    violation = np.inf
+    l2_violation = np.inf
 
     bnds = [(0, 0) if i == j else (0, None) for _ in range(2) for i in range(d) for j in range(d)]
 
@@ -605,15 +625,16 @@ def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, vi
             print("equality constraints:", c_e_new)
             print("inequality constraints:", c_i_new)
             ###############################
-            violation_new = _violation(c_e_new, c_i_new)
-            if violation_new > 0.25 * violation:
+            # violation_new = _violation(c_e_new, c_i_new)
+            l2_violation_new, max_violation_new = _violation(c_e_new, c_i_new,)
+            if l2_violation_new > 0.25 * l2_violation:
                 rho *= 10
             else:
                 break
-        w_est, violation = w_new, violation_new
+        w_est, l2_violation = w_new, l2_violation_new
         alpha += rho * c_e_new
         beta = np.maximum( beta + rho * c_i_new, 0.0)
-        if violation <= violation_tol or rho >= rho_max:
+        if max_violation_new <= violation_tol or rho >= rho_max:
             break
     W_est = _adj(w_est)
     W_est[np.abs(W_est) < w_threshold] = 0
@@ -622,10 +643,8 @@ def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, vi
 
 if __name__ == '__main__':
     from prior_notears import utils
-    utils.set_random_seed(1)
-
-    n, d, s0, graph_type, sem_type = 100, 4, 4, 'ER', 'gauss'
     utils.set_random_seed(4)
+    n, d, s0, graph_type, sem_type = 100, 4, 4, 'ER', 'gauss'
     B_true = utils.simulate_dag(d, s0, graph_type)
     W_true = utils.simulate_parameter(B_true)
     print("W_true:", W_true)
