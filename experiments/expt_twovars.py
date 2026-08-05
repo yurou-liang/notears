@@ -1,5 +1,5 @@
 """Experiments for linear Gaussian SEM with two variables."""
-from notears import notears, utils
+from prior_notears import notears, utils
 import numpy as np
 from tqdm import tqdm
 from collections import defaultdict
