@@ -643,7 +643,7 @@ def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, vi
 
 if __name__ == '__main__':
     from prior_notears import utils
-    utils.set_random_seed(4)
+    utils.set_random_seed(5)
     n, d, s0, graph_type, sem_type = 100, 4, 4, 'ER', 'gauss'
     B_true = utils.simulate_dag(d, s0, graph_type)
     W_true = utils.simulate_parameter(B_true)
@@ -656,7 +656,7 @@ if __name__ == '__main__':
         # "forbid_edge_pairs": [(0, 1)],
         # "forbid_path_pairs": [(1, 3)],
         # "forbid_trek_pairs": [(1, 3)],
-        "exist_edge_pairs": [(1, 2), (1, 3)],
+        "exist_edge_pairs": [(0, 3)],
         # "exist_path_pairs": [(3, 2)],
         # "exist_trek_pairs": [(1, 3)],
         }
