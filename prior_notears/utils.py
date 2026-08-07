@@ -57,6 +57,109 @@ def simulate_dag(d, s0, graph_type):
     return B_perm
 
 
+def generate_prior_knowledge(B, prior_rate, prior_type, random_state=None):
+    """Sample one type of correct prior knowledge from a ground-truth DAG.
+
+    The requested number of prior statements is ``ceil(prior_rate * d)`` and
+    the returned number is capped by the number of eligible candidates. Edge
+    and path pairs are directed. Trek pairs are represented once with ``i < j``
+    because trek existence is symmetric.
+
+    Args:
+        B (np.ndarray): Ground-truth adjacency matrix with shape ``[d, d]``;
+            ``B[i, j] != 0`` means ``i -> j``.
+        prior_rate (float): Requested number of prior statements per node.
+        prior_type (str): One of ``forbid_edge_pairs``, ``forbid_path_pairs``,
+            ``forbid_trek_pairs``, ``exist_edge_pairs``,
+            ``exist_path_pairs``, or ``exist_trek_pairs``. The corresponding
+            name without the ``_pairs`` suffix is also accepted.
+        random_state (int, optional): Seed for local reproducible sampling. If
+            omitted, sampling uses NumPy's global random state.
+
+    Returns:
+        dict: ``{prior_type: pairs}``, where ``pairs`` contains
+        ``min(ceil(prior_rate * d), number_of_candidates)`` unique pairs.
+    """
+    B = np.asarray(B)
+    if B.ndim != 2 or B.shape[0] != B.shape[1]:
+        raise ValueError('B must be a square adjacency matrix')
+    if not np.isfinite(prior_rate) or prior_rate < 0:
+        raise ValueError('prior_rate must be a finite nonnegative number')
+
+    canonical_types = (
+        'forbid_edge_pairs',
+        'forbid_path_pairs',
+        'forbid_trek_pairs',
+        'exist_edge_pairs',
+        'exist_path_pairs',
+        'exist_trek_pairs',
+    )
+    aliases = {
+        name.removesuffix('_pairs'): name
+        for name in canonical_types
+    }
+    prior_type = aliases.get(prior_type, prior_type)
+    if prior_type not in canonical_types:
+        raise ValueError(
+            f'unknown prior type {prior_type!r}; expected one of '
+            f'{canonical_types}'
+        )
+
+    adjacency = B != 0
+    d = adjacency.shape[0]
+    np.fill_diagonal(adjacency, False)
+
+    # Boolean transitive closure: reachability[i, j] is true iff there is a
+    # directed path from i to j.
+    reachability = adjacency.copy()
+    for k in range(d):
+        reachability |= (
+            reachability[:, [k]] & reachability[[k], :]
+        )
+    np.fill_diagonal(reachability, False)
+
+    if prior_type.endswith('edge_pairs'):
+        relation = adjacency
+        directed = True
+    elif prior_type.endswith('path_pairs'):
+        relation = reachability
+        directed = True
+    else:
+        # A trek exists between two nodes iff they share an ancestor. Each
+        # node is included as its own ancestor, so each path is also a trek.
+        ancestor_relation = reachability.copy()
+        np.fill_diagonal(ancestor_relation, True)
+        relation = (
+            ancestor_relation.T.astype(np.int64)
+            @ ancestor_relation.astype(np.int64)
+        ) > 0
+        directed = False
+
+    want_existing = prior_type.startswith('exist_')
+    candidates = []
+    for i in range(d):
+        j_start = 0 if directed else i + 1
+        for j in range(j_start, d):
+            if i == j:
+                continue
+            if bool(relation[i, j]) == want_existing:
+                candidates.append((i, j))
+
+    requested_count = int(np.ceil(prior_rate * d))
+    actual_count = min(requested_count, len(candidates))
+    if actual_count == 0:
+        return {prior_type: []}
+
+    rng = np.random if random_state is None else np.random.RandomState(random_state)
+    selected_indices = rng.choice(
+        len(candidates),
+        size=actual_count,
+        replace=False,
+    )
+    selected_pairs = [candidates[index] for index in selected_indices]
+    return {prior_type: selected_pairs}
+
+
 def simulate_parameter(B, w_ranges=((-2.0, -0.5), (0.5, 2.0))):
     """Simulate SEM parameters for a DAG.
 
@@ -259,3 +362,38 @@ def count_accuracy(B_true, B_est):
     shd = len(extra_lower) + len(missing_lower) + len(reverse)
     return {'fdr': fdr, 'tpr': tpr, 'fpr': fpr, 'shd': shd, 'nnz': pred_size}
 
+if __name__ == '__main__':
+    # Example DAG: 0 -> 1 -> 2, with node 3 disconnected.
+    B_example = np.array([
+        [0, 1, 0, 0],
+        [0, 0, 1, 0],
+        [0, 0, 0, 0],
+        [0, 0, 0, 0],
+    ])
+    prior_rate = 0.5
+    requested_count = int(np.ceil(prior_rate * B_example.shape[0]))
+    prior_types = (
+        'forbid_edge_pairs',
+        'forbid_path_pairs',
+        'forbid_trek_pairs',
+        'exist_edge_pairs',
+        'exist_path_pairs',
+        'exist_trek_pairs',
+    )
+
+    print('Ground-truth adjacency matrix:')
+    print(B_example)
+    print('Requested prior knowledge per type:', requested_count)
+
+    for seed, prior_type in enumerate(prior_types):
+        prior_knowledge = generate_prior_knowledge(
+            B_example,
+            prior_rate=prior_rate,
+            prior_type=prior_type,
+            random_state=seed,
+        )
+        selected_pairs = prior_knowledge[prior_type]
+
+        assert len(selected_pairs) <= requested_count
+        assert len(selected_pairs) == len(set(selected_pairs))
+        print(f'{prior_type}: {prior_knowledge}')
