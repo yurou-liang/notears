@@ -1,3 +1,5 @@
+import argparse
+import json
 import numpy as np
 import scipy.linalg as slin
 import scipy.optimize as sopt
@@ -5,6 +7,7 @@ from scipy.optimize import check_grad
 from scipy.special import expit as sigmoid
 from scipy.optimize import approx_fprime
 from notears import linear
+from pathlib import Path
 
 ####just for test, to delete later #######################################
 def _forbid_edges(W, edge_pairs):
@@ -617,6 +620,20 @@ def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, vi
         w_new, c_e_new, c_i_new = None, None, None
         while rho < rho_max:
             sol = sopt.minimize(_func, w_est, method='L-BFGS-B', jac=True, bounds=bnds)
+
+            if not sol.success:
+                print("L-BFGS-B warning:", sol.message)
+
+            if not np.isfinite(sol.fun):
+                raise FloatingPointError(
+                    "The augmented objective became non-finite"
+                )
+
+            if not np.all(np.isfinite(sol.x)):
+                raise FloatingPointError(
+                    "The optimizer returned non-finite weights"
+                )
+            
             w_new = sol.x
             c_e_new, _ = combined_equality_constraints(_adj(w_new))
             i_value_new, _ = combined_inequality_constraints(_adj(w_new))
@@ -638,41 +655,74 @@ def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, vi
             break
     W_est = _adj(w_est)
     W_est[np.abs(W_est) < w_threshold] = 0
-    return W_est
+    return W_est, bool(sol.success)
 
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser(prog='linear NOTEARS with prior knowledge',)
+
+    parser.add_argument('-s', '--seed', dest='s',  default=42, type=int)
+    parser.add_argument('-d', '--num_nodes', dest='d', default=4, type=int)
+    parser.add_argument('-e', '--num_edges', dest='e', default=2, type=int)
+    parser.add_argument('-g', '--graph_type', dest='g', default="ER", type=str)
+    parser.add_argument('-n', '--noise', dest='n', default="Gaussian", type=str)
+    parser.add_argument('-p', '--prior_type', dest='p', default="mix", type=str)
+    parser.add_argument('-r', '--prior_rate', dest='r', default=0.25, type=float)
+    parser.add_argument('-t', '--w_threshold', dest='t', default=0.3, type=float)
+    args = parser.parse_args()
+
     from prior_notears import utils
-    utils.set_random_seed(5)
-    n, d, s0, graph_type, sem_type = 100, 4, 4, 'ER', 'gauss'
+    utils.set_random_seed(args.s)
+    n, d, s0, graph_type, sem_type = 100, args.d, args.e*args.d, args.g, args.n
     B_true = utils.simulate_dag(d, s0, graph_type)
+    print("B_true:", B_true)
     W_true = utils.simulate_parameter(B_true)
-    print("W_true:", W_true)
+    filename = f"linear_{args.p}_{graph_type}{args.e}_d{d}_{sem_type}.json"
 
     X = utils.simulate_linear_sem(W_true, n, sem_type)
-    np.savetxt('X.csv', X, delimiter=',')
+    prior_knowledge = utils.generate_prior_knowledge(
+            B_true,
+            prior_rate=args.r,
+            prior_type=args.p,
+        )
+    print("prior_knowledge:", prior_knowledge)
 
-    prior_knowledge = {
-        # "forbid_edge_pairs": [(0, 1)],
-        # "forbid_path_pairs": [(1, 3)],
-        # "forbid_trek_pairs": [(1, 3)],
-        "exist_edge_pairs": [(0, 3)],
-        # "exist_path_pairs": [(3, 2)],
-        # "exist_trek_pairs": [(1, 3)],
-        }
     print('>>> Evaluation with prior knowledge <<<')
-    W_est_prior = notears_linear(X, lambda1=0.1, loss_type='l2', prior_knowledge=prior_knowledge)
+    W_est_prior, sol_success = notears_linear(X, lambda1=0.1, loss_type='l2', prior_knowledge=prior_knowledge, w_threshold=args.t)
     assert utils.is_dag(W_est_prior)
     print("W_est_prior:", W_est_prior)
-    acc = utils.count_accuracy(B_true, W_est_prior != 0)
-    print(acc)
+    acc_prior = utils.count_accuracy(B_true, W_est_prior != 0)
+    print(acc_prior)
 
     print('>>> Evaluation without prior knowledge <<<')
-    W_est_no_prior = linear.notears_linear(X, lambda1=0.1, loss_type='l2')
+    W_est_no_prior = linear.notears_linear(X, lambda1=0.1, loss_type='l2', w_threshold=args.t)
     assert utils.is_dag(W_est_no_prior)
     print("W_est_no_prior:", W_est_no_prior)
-    acc = utils.count_accuracy(B_true, W_est_no_prior != 0)
-    print(acc)
+    acc_no_prior = utils.count_accuracy(B_true, W_est_no_prior != 0)
+    print(acc_no_prior)
+
+    results = {
+        "B_true": B_true.tolist(),
+        "W_true": W_true.tolist(),
+        "X": X.tolist(),
+        "prior_knowledge": prior_knowledge,
+        "W_est_prior": W_est_prior.tolist(),
+        "W_est_no_prior": W_est_no_prior.tolist(),
+        "acc_prior": acc_prior,
+        "acc_no_prior": acc_no_prior,
+        "sol_success": sol_success
+    }
+
+    project_root = Path(__file__).resolve().parent.parent
+    output_dir = project_root / f"linear_{args.p}"
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    output_path = output_dir / filename
+
+    with output_path.open("w") as file:
+        json.dump(results, file, indent=4)
+
+    print(f"Results saved to: {output_path}")
 #### check gradient of prior knowledge constraints
 # if __name__ == '__main__':
 #     d = 4
