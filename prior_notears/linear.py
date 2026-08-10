@@ -673,11 +673,11 @@ if __name__ == '__main__':
 
     from prior_notears import utils
     utils.set_random_seed(args.s)
-    n, d, s0, graph_type, sem_type = 100, args.d, args.e*args.d, args.g, args.n
+    n, d, s0, graph_type, sem_type = 10*args.d, args.d, args.e*args.d, args.g, args.n
     B_true = utils.simulate_dag(d, s0, graph_type)
     print("B_true:", B_true)
     W_true = utils.simulate_parameter(B_true)
-    filename = f"linear_{args.p}_{graph_type}{args.e}_d{d}_{sem_type}.json"
+    filename = f"linear_{args.p}_{graph_type}{args.e}_d{d}_{sem_type}_rate{args.r}_seed{args.s}.json"
 
     X = utils.simulate_linear_sem(W_true, n, sem_type)
     prior_knowledge = utils.generate_prior_knowledge(
