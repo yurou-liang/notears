@@ -58,7 +58,7 @@ def simulate_dag(d, s0, graph_type):
 
 
 def generate_prior_knowledge(B, prior_rate, prior_type, random_state=None):
-    """Sample one type of correct prior knowledge from a ground-truth DAG.
+    """Sample correct prior knowledge from a ground-truth DAG.
 
     The requested number of prior statements is ``ceil(prior_rate * d)`` and
     the returned number is capped by the number of eligible candidates. Edge
@@ -69,7 +69,7 @@ def generate_prior_knowledge(B, prior_rate, prior_type, random_state=None):
         B (np.ndarray): Ground-truth adjacency matrix with shape ``[d, d]``;
             ``B[i, j] != 0`` means ``i -> j``.
         prior_rate (float): Requested number of prior statements per node.
-        prior_type (str): One of ``forbid_edge_pairs``, ``forbid_path_pairs``,
+        prior_type (str): ``mix`` or one of ``forbid_edge_pairs``, ``forbid_path_pairs``,
             ``forbid_trek_pairs``, ``exist_edge_pairs``,
             ``exist_path_pairs``, or ``exist_trek_pairs``. The corresponding
             name without the ``_pairs`` suffix is also accepted.
@@ -77,9 +77,13 @@ def generate_prior_knowledge(B, prior_rate, prior_type, random_state=None):
             omitted, sampling uses NumPy's global random state.
 
     Returns:
-        dict: ``{prior_type: pairs}``, where ``pairs`` contains
-        ``min(ceil(prior_rate * d), number_of_candidates)`` unique pairs.
+        dict: For a single type, ``{prior_type: pairs}``. For ``mix``, the
+        dictionary contains all six canonical type keys. Sampling stops after
+        ``ceil(prior_rate * d)`` statements or after all candidate pools are
+        exhausted.
     """
+    rng = np.random if random_state is None else np.random.RandomState(random_state)
+
     B = np.asarray(B)
     if B.ndim != 2 or B.shape[0] != B.shape[1]:
         raise ValueError('B must be a square adjacency matrix')
@@ -99,10 +103,10 @@ def generate_prior_knowledge(B, prior_rate, prior_type, random_state=None):
         for name in canonical_types
     }
     prior_type = aliases.get(prior_type, prior_type)
-    if prior_type not in canonical_types:
+    if prior_type not in canonical_types and prior_type != 'mix':
         raise ValueError(
             f'unknown prior type {prior_type!r}; expected one of '
-            f'{canonical_types}'
+            f'{canonical_types} or \'mix\''
         )
 
     adjacency = B != 0
@@ -117,6 +121,57 @@ def generate_prior_knowledge(B, prior_rate, prior_type, random_state=None):
             reachability[:, [k]] & reachability[[k], :]
         )
     np.fill_diagonal(reachability, False)
+
+    if prior_type == 'mix':
+        ancestor_relation = reachability.copy()
+        np.fill_diagonal(ancestor_relation, True)
+        trek_relation = (
+            ancestor_relation.T.astype(np.int64)
+            @ ancestor_relation.astype(np.int64)
+        ) > 0
+
+        candidate_pools = {}
+        for candidate_type in canonical_types:
+            if candidate_type.endswith('edge_pairs'):
+                candidate_relation = adjacency
+                candidate_is_directed = True
+            elif candidate_type.endswith('path_pairs'):
+                candidate_relation = reachability
+                candidate_is_directed = True
+            else:
+                candidate_relation = trek_relation
+                candidate_is_directed = False
+
+            candidate_is_existing = candidate_type.startswith('exist_')
+            pool = []
+            for i in range(d):
+                j_start = 0 if candidate_is_directed else i + 1
+                for j in range(j_start, d):
+                    if i == j:
+                        continue
+                    if bool(candidate_relation[i, j]) == candidate_is_existing:
+                        pool.append((i, j))
+            candidate_pools[candidate_type] = pool
+
+        requested_count = int(np.ceil(prior_rate * d))
+        prior_knowledge = {name: [] for name in canonical_types}
+        available_types = [
+            name for name, pool in candidate_pools.items() if pool
+        ]
+
+        selected_count = 0
+        while selected_count < requested_count and available_types:
+            selected_type = rng.choice(available_types)
+            selected_pool = candidate_pools[selected_type]
+            selected_index = int(rng.randint(len(selected_pool)))
+            selected_pair = selected_pool.pop(selected_index)
+            prior_knowledge[selected_type].append(selected_pair)
+            selected_count += 1
+
+            if not selected_pool:
+                available_types.remove(selected_type)
+
+        return prior_knowledge
 
     if prior_type.endswith('edge_pairs'):
         relation = adjacency
@@ -150,7 +205,6 @@ def generate_prior_knowledge(B, prior_rate, prior_type, random_state=None):
     if actual_count == 0:
         return {prior_type: []}
 
-    rng = np.random if random_state is None else np.random.RandomState(random_state)
     selected_indices = rng.choice(
         len(candidates),
         size=actual_count,
@@ -365,9 +419,9 @@ def count_accuracy(B_true, B_est):
 if __name__ == '__main__':
     # Example DAG: 0 -> 1 -> 2, with node 3 disconnected.
     B_example = np.array([
-        [0, 1, 0, 0],
-        [0, 0, 1, 0],
         [0, 0, 0, 0],
+        [1, 0, 0, 0],
+        [0, 1, 0, 1],
         [0, 0, 0, 0],
     ])
     prior_rate = 0.5
@@ -397,3 +451,17 @@ if __name__ == '__main__':
         assert len(selected_pairs) <= requested_count
         assert len(selected_pairs) == len(set(selected_pairs))
         print(f'{prior_type}: {prior_knowledge}')
+
+    mixed_prior_knowledge = generate_prior_knowledge(
+        B_example,
+        prior_rate=prior_rate,
+        prior_type='mix',
+        random_state=0,
+    )
+    mixed_count = sum(len(pairs) for pairs in mixed_prior_knowledge.values())
+    assert mixed_count == requested_count
+    assert all(
+        len(pairs) == len(set(pairs))
+        for pairs in mixed_prior_knowledge.values()
+    )
+    print(f'mix: {mixed_prior_knowledge}')
