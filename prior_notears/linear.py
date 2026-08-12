@@ -9,6 +9,10 @@ from scipy.optimize import approx_fprime
 from notears import linear
 from pathlib import Path
 from sklearn.preprocessing import StandardScaler
+from Varsortability.src.varsortability import varsortability
+
+def softplus(x, sharpness=10.0):
+    return np.logaddexp(0.0, sharpness * x) / sharpness
 
 ####just for test, to delete later #######################################
 def _forbid_edges(W, edge_pairs):
@@ -174,6 +178,53 @@ def _exist_trek(W, w_thres, trek_pairs, sharpness=10.0):
 
     return residuals, J
 
+
+    """Return trek residuals and their Jacobian.
+
+    Args:
+        W: Weight matrix with shape (d, d).
+        w_thres: Threshold for trek existence.
+        trek_pairs: Sequence of endpoint pairs (i, j).
+        sharpness: Softplus sharpness parameter.
+
+    Returns:
+        residuals: Array with shape (len(trek_pairs),).
+        J: Jacobian with shape (len(trek_pairs), W.size).
+    """
+
+    W = np.asarray(W, dtype=float)
+    X = W * W - w_thres * w_thres
+    A = softplus(X, sharpness)
+    E = slin.expm(A)
+    T = E.T @ E
+
+    dA_dX = sigmoid(sharpness * X)
+    residuals = np.empty(len(trek_pairs), dtype=float)
+    J = np.empty((len(trek_pairs), W.size), dtype=float)
+    for k, (i, j) in enumerate(trek_pairs):
+        residuals[k] = T[i, j]
+        # Gradient of T[i, j] with respect to E
+        grad_E = np.zeros_like(E, dtype=float)
+        if i == j:
+            grad_E[:, i] = 2.0 * E[:, i]
+        else:
+            grad_E[:, i] = E[:, j]
+            grad_E[:, j] = E[:, i]
+        # Adjoint derivative through E = expm(A)
+        grad_A = slin.expm_frechet(
+            A.T,
+            grad_E,
+            compute_expm=False,
+        )
+
+        # Elementwise chain:
+        # A = softplus_beta(X)
+        # X = W**2 - w_thres**2
+        grad_W = grad_A * dA_dX * (2.0 * W)
+        J[k, :] = grad_W.reshape(-1)
+
+    return residuals, J
+
 def combined_equality_constraints(w, forbid_edge_pairs, forbid_path_pairs, forbid_trek_pairs):
     """Combine equality constraints and their Jacobian."""
     # h_value, h_grad = _h(w)
@@ -217,11 +268,54 @@ def combined_inequality_constraints(w, w_threshold, exist_edge_pairs, exist_path
 
     return values, jacobian
 
+def evaluate_prior_values(W, prior_knowledge, w_threshold):
+    constraint_values = {}
 
+    forbid_functions = {
+        "forbid_edge_pairs": _forbid_edges,
+        "forbid_path_pairs": _forbid_paths,
+        "forbid_trek_pairs": _forbid_trek,
+    }
+
+    exist_functions = {
+        "exist_edge_pairs": _exist_edges,
+        "exist_path_pairs": _exist_paths,
+        "exist_trek_pairs": _exist_trek,
+    }
+
+    for prior_key, pairs in prior_knowledge.items():
+        if not pairs:
+            constraint_values[prior_key] = []
+            continue
+
+        if prior_key in forbid_functions:
+            constraint_function = forbid_functions[prior_key]
+
+            # Call with one pair at a time because forbidden functions
+            # otherwise return the mean over all supplied pairs.
+            values = [
+                float(constraint_function(W, [pair])[0])
+                for pair in pairs
+            ]
+
+        elif prior_key in exist_functions:
+            values, _ = exist_functions[prior_key](
+                W,
+                w_threshold,
+                pairs,
+            )
+
+            values = np.asarray(values).reshape(-1).tolist()
+
+        else:
+            raise ValueError(
+                f"Unknown prior-knowledge key: {prior_key}"
+            )
+
+        constraint_values[prior_key] = values
+
+    return constraint_values
 ####just for test, to delete later #######################################
-
-def softplus(x, sharpness=10.0):
-    return np.logaddexp(0.0, sharpness * x) / sharpness
 
 def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, violation_tol=1e-8, rho_max=1e+16, w_threshold=0.3, sharpness=10.0, epsilon=1e-1):
     """Solve min_W L(W; X) + lambda1 ‖W‖_1 s.t. h(W) = 0 using augmented Lagrangian.
@@ -659,14 +753,15 @@ def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, vi
     return W_est, bool(sol.success)
 
 
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(prog='linear NOTEARS with prior knowledge',)
 
     parser.add_argument('-s', '--seed', dest='s',  default=42, type=int)
     parser.add_argument('-d', '--num_nodes', dest='d', default=4, type=int)
-    parser.add_argument('-e', '--num_edges', dest='e', default=2, type=int)
+    parser.add_argument('-e', '--num_edges', dest='e', default=1, type=int)
     parser.add_argument('-g', '--graph_type', dest='g', default="ER", type=str)
-    parser.add_argument('-n', '--noise', dest='n', default="Gaussian", type=str)
+    parser.add_argument('-n', '--noise', dest='n', default="gauss", type=str)
     parser.add_argument('-p', '--prior_type', dest='p', default="mix", type=str)
     parser.add_argument('-r', '--prior_rate', dest='r', default=0.25, type=float)
     parser.add_argument('-t', '--w_threshold', dest='t', default=0.3, type=float)
@@ -682,7 +777,8 @@ if __name__ == '__main__':
 
     X = utils.simulate_linear_sem(W_true, n, sem_type)
     scaler = StandardScaler()
-    X_standardized = scaler.fit_transform(X)
+    X_std = scaler.fit_transform(X)
+    varsortability_score = varsortability(X_std, W_true)
     prior_knowledge = utils.generate_prior_knowledge(
             B_true,
             prior_rate=args.r,
@@ -691,29 +787,34 @@ if __name__ == '__main__':
     print("prior_knowledge:", prior_knowledge)
 
     print('>>> Evaluation with prior knowledge <<<')
-    W_est_prior, sol_success = notears_linear(X_standardized, lambda1=0.1, loss_type='l2', prior_knowledge=prior_knowledge, w_threshold=args.t)
+    W_est_prior, sol_success = notears_linear(X_std, lambda1=0.1, loss_type='l2', prior_knowledge=prior_knowledge, w_threshold=args.t)
     assert utils.is_dag(W_est_prior)
     print("W_est_prior:", W_est_prior)
     acc_prior = utils.count_accuracy(B_true, W_est_prior != 0)
+    constraint_values_prior = evaluate_prior_values(W_est_prior, prior_knowledge, args.t)
     print(acc_prior)
 
     print('>>> Evaluation without prior knowledge <<<')
-    W_est_no_prior = linear.notears_linear(X_standardized, lambda1=0.1, loss_type='l2', w_threshold=args.t)
+    W_est_no_prior = linear.notears_linear(X_std, lambda1=0.1, loss_type='l2', w_threshold=args.t)
     assert utils.is_dag(W_est_no_prior)
     print("W_est_no_prior:", W_est_no_prior)
     acc_no_prior = utils.count_accuracy(B_true, W_est_no_prior != 0)
+    constraint_values_no_prior = evaluate_prior_values(W_est_no_prior, prior_knowledge, args.t)
     print(acc_no_prior)
 
     results = {
         "B_true": B_true.tolist(),
         "W_true": W_true.tolist(),
         "X": X.tolist(),
-        "X_standardized": X_standardized.tolist(),
+        "X_std": X_std.tolist(),
+        "varsortability_score": varsortability_score,
         "prior_knowledge": prior_knowledge,
         "W_est_prior": W_est_prior.tolist(),
         "W_est_no_prior": W_est_no_prior.tolist(),
         "acc_prior": acc_prior,
         "acc_no_prior": acc_no_prior,
+        "constraint_values_prior": constraint_values_prior,
+        "constraint_values_no_prior": constraint_values_no_prior,
         "sol_success": sol_success
     }
 
