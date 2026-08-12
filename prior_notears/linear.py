@@ -8,6 +8,7 @@ from scipy.special import expit as sigmoid
 from scipy.optimize import approx_fprime
 from notears import linear
 from pathlib import Path
+from sklearn.preprocessing import StandardScaler
 
 ####just for test, to delete later #######################################
 def _forbid_edges(W, edge_pairs):
@@ -680,6 +681,8 @@ if __name__ == '__main__':
     filename = f"linear_{args.p}_{graph_type}{args.e}_d{d}_{sem_type}_rate{args.r}_seed{args.s}.json"
 
     X = utils.simulate_linear_sem(W_true, n, sem_type)
+    scaler = StandardScaler()
+    X_standardized = scaler.fit_transform(X)
     prior_knowledge = utils.generate_prior_knowledge(
             B_true,
             prior_rate=args.r,
@@ -688,14 +691,14 @@ if __name__ == '__main__':
     print("prior_knowledge:", prior_knowledge)
 
     print('>>> Evaluation with prior knowledge <<<')
-    W_est_prior, sol_success = notears_linear(X, lambda1=0.1, loss_type='l2', prior_knowledge=prior_knowledge, w_threshold=args.t)
+    W_est_prior, sol_success = notears_linear(X_standardized, lambda1=0.1, loss_type='l2', prior_knowledge=prior_knowledge, w_threshold=args.t)
     assert utils.is_dag(W_est_prior)
     print("W_est_prior:", W_est_prior)
     acc_prior = utils.count_accuracy(B_true, W_est_prior != 0)
     print(acc_prior)
 
     print('>>> Evaluation without prior knowledge <<<')
-    W_est_no_prior = linear.notears_linear(X, lambda1=0.1, loss_type='l2', w_threshold=args.t)
+    W_est_no_prior = linear.notears_linear(X_standardized, lambda1=0.1, loss_type='l2', w_threshold=args.t)
     assert utils.is_dag(W_est_no_prior)
     print("W_est_no_prior:", W_est_no_prior)
     acc_no_prior = utils.count_accuracy(B_true, W_est_no_prior != 0)
@@ -705,6 +708,7 @@ if __name__ == '__main__':
         "B_true": B_true.tolist(),
         "W_true": W_true.tolist(),
         "X": X.tolist(),
+        "X_standardized": X_standardized.tolist(),
         "prior_knowledge": prior_knowledge,
         "W_est_prior": W_est_prior.tolist(),
         "W_est_no_prior": W_est_no_prior.tolist(),
@@ -723,6 +727,7 @@ if __name__ == '__main__':
         json.dump(results, file, indent=4)
 
     print(f"Results saved to: {output_path}")
+    ##### add constraints check from ground truth and constraints"
 #### check gradient of prior knowledge constraints
 # if __name__ == '__main__':
 #     d = 4

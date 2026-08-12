@@ -10,10 +10,10 @@ PRIOR_RATE="${PRIOR_RATE:-0.5}"
 NODE_COUNTS=(5 10 20)
 NOISE_TYPES=(gauss)
 PRIOR_TYPES=(
-    forbid_edge_pairs
+    # forbid_edge_pairs
     # forbid_path_pairs
     # forbid_trek_pairs
-    # exist_edge_pairs
+    exist_edge_pairs
     # exist_path_pairs
     # exist_trek_pairs
 )
@@ -21,8 +21,8 @@ PRIOR_TYPES=(
 # Each entry is "graph_type:edge_factor". linear.py calculates s0 as d times
 # edge_factor, giving the ER1, ER2, ER4, and SF4 regimes.
 GRAPH_SETTINGS=(
-    # "ER:1"
-    "ER:2"
+    "ER:1"
+    # "ER:2"
     # "ER:4"
     # "SF:4"
 )
