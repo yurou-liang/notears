@@ -7,8 +7,9 @@ PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-/opt/anaconda3/envs/notears/bin/python}"
 PRIOR_RATE="${PRIOR_RATE:-0.5}"
 
-NODE_COUNTS=(5 10 20)
+NODE_COUNTS=(5)
 NOISE_TYPES=(gauss)
+LOSS_TYPE=(likelihood)
 PRIOR_TYPES=(
     # forbid_edge_pairs
     # forbid_path_pairs
@@ -51,6 +52,7 @@ for seed in {0..9}; do
                         --num_nodes "${d}" \
                         --num_edges "${edge_factor}" \
                         --graph_type "${graph_type}" \
+                        --loss_type "${LOSS_TYPE}" \
                         --noise "${noise_type}" \
                         --prior_type "${prior_type}" \
                         --prior_rate "${PRIOR_RATE}" \
