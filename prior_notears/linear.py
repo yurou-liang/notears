@@ -315,6 +315,20 @@ def evaluate_prior_values(W, prior_knowledge, w_threshold):
         constraint_values[prior_key] = values
 
     return constraint_values
+
+def loss(W, X):
+    """Evaluate value and gradient of loss."""
+    M = X @ W
+    R = X - M
+    residual_var = np.mean(R ** 2, axis=0)
+    A = np.eye(W.shape[0]) - W * W
+    det_sign, log_det = np.linalg.slogdet(A)
+    if det_sign == 0 or np.any(residual_var <= 0):
+        return np.inf, np.zeros(W.size, dtype=W.dtype)
+    loss = 0.5 * np.log(residual_var).sum() - log_det
+    G_loss = -(X.T @ R) / (X.shape[0] * residual_var)
+    G_loss += 2.0 * W * np.linalg.inv(A).T
+    return loss, G_loss.ravel()
 ####just for test, to delete later #######################################
 
 def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, violation_tol=1e-8, rho_max=1e+16, w_threshold=0.3, sharpness=10.0, epsilon=1e-1):
@@ -323,7 +337,7 @@ def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, vi
     Args:
         X (np.ndarray): [n, d] sample matrix
         lambda1 (float): l1 penalty parameter
-        loss_type (str): l2, logistic, poisson
+        loss_type (str): l2, likelihood, logistic, poisson
         prior_knowledge (dict): prior knowledge
         max_iter (int): max num of dual ascent steps
         violation_tol (float): exit if |violation(w_est)| <= violation_tol
@@ -353,6 +367,18 @@ def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, vi
             R = X - M
             loss = 0.5 / X.shape[0] * (R ** 2).sum()
             G_loss = - 1.0 / X.shape[0] * X.T @ R
+        elif loss_type == 'likelihood':
+            """Evaluate value and gradient of loss."""
+            R = X - M
+            residual_var = np.mean(R ** 2, axis=0)
+            A = np.eye(W.shape[0]) - W * W
+            det_sign, log_det = np.linalg.slogdet(A)
+            if det_sign == 0 or np.any(residual_var <= 0):
+                return np.inf, np.zeros(W.size, dtype=W.dtype)
+            loss = 0.5 * np.log(residual_var).sum() - log_det
+            G_loss = -(X.T @ R) / (X.shape[0] * residual_var)
+            G_loss += 2.0 * W * np.linalg.inv(A).T
+            return loss, G_loss.ravel()
         elif loss_type == 'logistic':
             loss = 1.0 / X.shape[0] * (np.logaddexp(0, M) - X * M).sum()
             G_loss = 1.0 / X.shape[0] * X.T @ (sigmoid(M) - X)
@@ -709,7 +735,7 @@ def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, vi
 
     bnds = [(0, 0) if i == j else (0, None) for _ in range(2) for i in range(d) for j in range(d)]
 
-    if loss_type == 'l2':
+    if loss_type in ('l2', 'likelihood'):
         X = X - np.mean(X, axis=0, keepdims=True)
     for _ in range(max_iter):
         w_new, c_e_new, c_i_new = None, None, None
@@ -755,82 +781,107 @@ def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, vi
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(prog='linear NOTEARS with prior knowledge',)
+    # parser = argparse.ArgumentParser(prog='linear NOTEARS with prior knowledge',)
 
-    parser.add_argument('-s', '--seed', dest='s',  default=42, type=int)
-    parser.add_argument('-d', '--num_nodes', dest='d', default=4, type=int)
-    parser.add_argument('-e', '--num_edges', dest='e', default=1, type=int)
-    parser.add_argument('-g', '--graph_type', dest='g', default="ER", type=str)
-    parser.add_argument('-n', '--noise', dest='n', default="gauss", type=str)
-    parser.add_argument('-p', '--prior_type', dest='p', default="mix", type=str)
-    parser.add_argument('-r', '--prior_rate', dest='r', default=0.25, type=float)
-    parser.add_argument('-t', '--w_threshold', dest='t', default=0.3, type=float)
-    args = parser.parse_args()
+    # parser.add_argument('-s', '--seed', dest='s',  default=42, type=int)
+    # parser.add_argument('-d', '--num_nodes', dest='d', default=4, type=int)
+    # parser.add_argument('-e', '--num_edges', dest='e', default=1, type=int)
+    # parser.add_argument('-g', '--graph_type', dest='g', default="ER", type=str)
+    # parser.add_argument('-n', '--noise', dest='n', default="gauss", type=str)
+    # parser.add_argument('-p', '--prior_type', dest='p', default="mix", type=str)
+    # parser.add_argument('-r', '--prior_rate', dest='r', default=0.25, type=float)
+    # parser.add_argument('-t', '--w_threshold', dest='t', default=0.3, type=float)
+    # args = parser.parse_args()
 
-    from prior_notears import utils
-    utils.set_random_seed(args.s)
-    n, d, s0, graph_type, sem_type = 10*args.d, args.d, args.e*args.d, args.g, args.n
-    B_true = utils.simulate_dag(d, s0, graph_type)
-    print("B_true:", B_true)
-    W_true = utils.simulate_parameter(B_true)
-    filename = f"linear_{args.p}_{graph_type}{args.e}_d{d}_{sem_type}_rate{args.r}_seed{args.s}.json"
+    # from prior_notears import utils
+    # utils.set_random_seed(args.s)
+    # n, d, s0, graph_type, sem_type = 10*args.d, args.d, args.e*args.d, args.g, args.n
+    # B_true = utils.simulate_dag(d, s0, graph_type)
+    # print("B_true:", B_true)
+    # W_true = utils.simulate_parameter(B_true)
+    # filename = f"linear_{args.p}_{graph_type}{args.e}_d{d}_{sem_type}_rate{args.r}_seed{args.s}.json"
 
-    X = utils.simulate_linear_sem(W_true, n, sem_type)
-    scaler = StandardScaler()
-    X_std = scaler.fit_transform(X)
-    varsortability_score = varsortability(X_std, W_true)
-    prior_knowledge = utils.generate_prior_knowledge(
-            B_true,
-            prior_rate=args.r,
-            prior_type=args.p,
-        )
-    print("prior_knowledge:", prior_knowledge)
+    # X = utils.simulate_linear_sem(W_true, n, sem_type)
+    # scaler = StandardScaler()
+    # X_std = scaler.fit_transform(X)
+    # varsortability_score = varsortability(X_std, W_true)
+    # prior_knowledge = utils.generate_prior_knowledge(
+    #         B_true,
+    #         prior_rate=args.r,
+    #         prior_type=args.p,
+    #     )
+    # print("prior_knowledge:", prior_knowledge)
 
-    print('>>> Evaluation with prior knowledge <<<')
-    W_est_prior, sol_success = notears_linear(X_std, lambda1=0.1, loss_type='l2', prior_knowledge=prior_knowledge, w_threshold=args.t)
-    assert utils.is_dag(W_est_prior)
-    print("W_est_prior:", W_est_prior)
-    acc_prior = utils.count_accuracy(B_true, W_est_prior != 0)
-    constraint_values_prior = evaluate_prior_values(W_est_prior, prior_knowledge, args.t)
-    print(acc_prior)
+    # print('>>> Evaluation with prior knowledge <<<')
+    # W_est_prior, sol_success = notears_linear(X_std, lambda1=0.1, loss_type='l2', prior_knowledge=prior_knowledge, w_threshold=args.t)
+    # assert utils.is_dag(W_est_prior)
+    # print("W_est_prior:", W_est_prior)
+    # acc_prior = utils.count_accuracy(B_true, W_est_prior != 0)
+    # constraint_values_prior = evaluate_prior_values(W_est_prior, prior_knowledge, args.t)
+    # print(acc_prior)
 
-    print('>>> Evaluation without prior knowledge <<<')
-    W_est_no_prior = linear.notears_linear(X_std, lambda1=0.1, loss_type='l2', w_threshold=args.t)
-    assert utils.is_dag(W_est_no_prior)
-    print("W_est_no_prior:", W_est_no_prior)
-    acc_no_prior = utils.count_accuracy(B_true, W_est_no_prior != 0)
-    constraint_values_no_prior = evaluate_prior_values(W_est_no_prior, prior_knowledge, args.t)
-    print(acc_no_prior)
+    # print('>>> Evaluation without prior knowledge <<<')
+    # W_est_no_prior = linear.notears_linear(X_std, lambda1=0.1, loss_type='l2', w_threshold=args.t)
+    # assert utils.is_dag(W_est_no_prior)
+    # print("W_est_no_prior:", W_est_no_prior)
+    # acc_no_prior = utils.count_accuracy(B_true, W_est_no_prior != 0)
+    # constraint_values_no_prior = evaluate_prior_values(W_est_no_prior, prior_knowledge, args.t)
+    # print(acc_no_prior)
 
-    results = {
-        "B_true": B_true.tolist(),
-        "W_true": W_true.tolist(),
-        "X": X.tolist(),
-        "X_std": X_std.tolist(),
-        "varsortability_score": varsortability_score,
-        "prior_knowledge": prior_knowledge,
-        "W_est_prior": W_est_prior.tolist(),
-        "W_est_no_prior": W_est_no_prior.tolist(),
-        "acc_prior": acc_prior,
-        "acc_no_prior": acc_no_prior,
-        "constraint_values_prior": constraint_values_prior,
-        "constraint_values_no_prior": constraint_values_no_prior,
-        "sol_success": sol_success
-    }
+    # results = {
+    #     "B_true": B_true.tolist(),
+    #     "W_true": W_true.tolist(),
+    #     "X": X.tolist(),
+    #     "X_std": X_std.tolist(),
+    #     "varsortability_score": varsortability_score,
+    #     "prior_knowledge": prior_knowledge,
+    #     "W_est_prior": W_est_prior.tolist(),
+    #     "W_est_no_prior": W_est_no_prior.tolist(),
+    #     "acc_prior": acc_prior,
+    #     "acc_no_prior": acc_no_prior,
+    #     "constraint_values_prior": constraint_values_prior,
+    #     "constraint_values_no_prior": constraint_values_no_prior,
+    #     "sol_success": sol_success
+    # }
 
-    project_root = Path(__file__).resolve().parent.parent
-    output_dir = project_root / f"linear_{args.p}"
-    output_dir.mkdir(parents=True, exist_ok=True)
+    # project_root = Path(__file__).resolve().parent.parent
+    # output_dir = project_root / f"linear_{args.p}"
+    # output_dir.mkdir(parents=True, exist_ok=True)
 
-    output_path = output_dir / filename
+    # output_path = output_dir / filename
 
-    with output_path.open("w") as file:
-        json.dump(results, file, indent=4)
+    # with output_path.open("w") as file:
+    #     json.dump(results, file, indent=4)
 
-    print(f"Results saved to: {output_path}")
+    # print(f"Results saved to: {output_path}")
     ##### add constraints check from ground truth and constraints"
 #### check gradient of prior knowledge constraints
 # if __name__ == '__main__':
+
+    rng = np.random.default_rng(42)
+    n, d = 100, 4
+    X = rng.normal(size=(n, d))
+    W = np.array([
+        [0.0, 2.0, 0.3, 0.8],
+        [0.2, 0.0, 0.5, 1.0],
+        [0.3, 0.4, 0.0, 0.7],
+        [0.4, 0.3, 0.2, 0.0],
+    ], dtype=float)
+
+    def objective(w):
+        W_matrix = w.reshape(d, d)
+        value, _ = loss(W_matrix, X)
+        return value
+
+
+    def gradient(w):
+        W_matrix = w.reshape(d, d)
+        _, grad = loss(W_matrix, X)
+        return grad
+
+
+    error = check_grad(objective, gradient, W.ravel())
+    print("Gradient error:", error)
 #     d = 4
 #     W = np.array([
 #         [1.0, 2.0, 0.3, 0.8],
