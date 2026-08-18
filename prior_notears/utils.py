@@ -370,6 +370,7 @@ def count_accuracy(B_true, B_est):
         fdr: (reverse + false positive) / prediction positive
         tpr: (true positive) / condition positive
         fpr: (reverse + false positive) / condition negative
+        f1: harmonic mean of precision and recall
         shd: undirected extra + undirected missing + reverse
         nnz: prediction positive
     """
@@ -408,13 +409,15 @@ def count_accuracy(B_true, B_est):
     fdr = float(len(reverse) + len(false_pos)) / max(pred_size, 1)
     tpr = float(len(true_pos)) / max(len(cond), 1)
     fpr = float(len(reverse) + len(false_pos)) / max(cond_neg_size, 1)
+    precision = float(len(true_pos)) / max(pred_size, 1)
+    f1 = 2.0 * precision * tpr / (precision + tpr) if precision + tpr > 0 else 0.0
     # structural hamming distance
     pred_lower = np.flatnonzero(np.tril(B_est + B_est.T))
     cond_lower = np.flatnonzero(np.tril(B_true + B_true.T))
     extra_lower = np.setdiff1d(pred_lower, cond_lower, assume_unique=True)
     missing_lower = np.setdiff1d(cond_lower, pred_lower, assume_unique=True)
     shd = len(extra_lower) + len(missing_lower) + len(reverse)
-    return {'fdr': fdr, 'tpr': tpr, 'fpr': fpr, 'shd': shd, 'nnz': pred_size}
+    return {'fdr': fdr, 'tpr': tpr, 'fpr': fpr, 'f1': f1, 'shd': shd, 'nnz': pred_size}
 
 if __name__ == '__main__':
     # Example DAG: 0 -> 1 -> 2, with node 3 disconnected.

@@ -9,7 +9,7 @@ PRIOR_RATE="${PRIOR_RATE:-0.5}"
 
 NODE_COUNTS=(5)
 NOISE_TYPES=(gauss)
-LOSS_TYPE=(likelihood)
+LOSS_TYPE=(both)
 PRIOR_TYPES=(
     # forbid_edge_pairs
     # forbid_path_pairs

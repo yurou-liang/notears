@@ -10,6 +10,7 @@ from notears import linear
 from pathlib import Path
 from sklearn.preprocessing import StandardScaler
 from Varsortability.src.varsortability import varsortability
+import time
 
 def softplus(x, sharpness=10.0):
     return np.logaddexp(0.0, sharpness * x) / sharpness
@@ -733,7 +734,8 @@ def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, vi
     beta = np.zeros(inequality_len, dtype=float)
     l2_violation = np.inf
 
-    bnds = [(0, 0) if i == j else (0, None) for _ in range(2) for i in range(d) for j in range(d)]
+    weight_bound = 10.0
+    bnds = [(0, 0) if i == j else (0, weight_bound) for _ in range(2) for i in range(d) for j in range(d)]
 
     if loss_type in ('l2', 'likelihood'):
         X = X - np.mean(X, axis=0, keepdims=True)
@@ -787,7 +789,7 @@ if __name__ == '__main__':
     parser.add_argument('-d', '--num_nodes', dest='d', default=4, type=int)
     parser.add_argument('-e', '--num_edges', dest='e', default=1, type=int)
     parser.add_argument('-g', '--graph_type', dest='g', default="ER", type=str)
-    parser.add_argument('-l', '--loss_type', dest='l', default="likelihood", type=str)
+    parser.add_argument('-l', '--loss_type', dest='l', default="both", type=str)
     parser.add_argument('-n', '--noise', dest='n', default="gauss", type=str)
     parser.add_argument('-p', '--prior_type', dest='p', default="mix", type=str)
     parser.add_argument('-r', '--prior_rate', dest='r', default=0.25, type=float)
@@ -802,6 +804,7 @@ if __name__ == '__main__':
     W_true = utils.simulate_parameter(B_true)
     filename = f"linear_{args.p}_{graph_type}{args.e}_d{d}_{sem_type}_rate{args.r}_seed{args.s}.json"
 
+    noise_scale = np.exp(np.random.uniform(np.log(0.5), np.log(2.0), size=d,))
     X = utils.simulate_linear_sem(W_true, n, sem_type)
     scaler = StandardScaler()
     X_std = scaler.fit_transform(X)
@@ -813,37 +816,49 @@ if __name__ == '__main__':
         )
     print("prior_knowledge:", prior_knowledge)
 
-    print(f'>>> Evaluation with prior knowledge and {args.l} loss <<<')
-    W_est_prior_ll, sol_success_ll = notears_linear(X_std, lambda1=0.1, loss_type=args.l, prior_knowledge=prior_knowledge, w_threshold=args.t)
-    assert utils.is_dag(W_est_prior_ll)
-    print("W_est_prior_ll:", W_est_prior_ll)
-    acc_prior_ll = utils.count_accuracy(B_true, W_est_prior_ll != 0)
-    constraint_values_prior_ll = evaluate_prior_values(W_est_prior_ll, prior_knowledge, args.t)
-    print(acc_prior_ll)
+    if args.l in ('both', 'likelihood'):
+        print(f'>>> Evaluation with prior knowledge and likelihood loss <<<')
+        start_time = time.perf_counter()
+        W_est_prior_ll, sol_success_ll = notears_linear(X_std, lambda1=0.1, loss_type="likelihood", prior_knowledge=prior_knowledge, w_threshold=args.t)
+        running_time_prior_ll = time.perf_counter() - start_time
+        assert utils.is_dag(W_est_prior_ll)
+        print("W_est_prior_ll:", W_est_prior_ll)
+        acc_prior_ll = utils.count_accuracy(B_true, W_est_prior_ll != 0)
+        constraint_values_prior_ll = evaluate_prior_values(W_est_prior_ll, prior_knowledge, args.t)
+        print(acc_prior_ll)
 
-    print(f'>>> Evaluation with prior knowledge and l2 loss <<<')
-    W_est_prior_l2, sol_success_l2 = notears_linear(X_std, lambda1=0.1, loss_type="l2", prior_knowledge=prior_knowledge, w_threshold=args.t)
-    assert utils.is_dag(W_est_prior_l2)
-    print("W_est_prior_l2:", W_est_prior_l2)
-    acc_prior_l2 = utils.count_accuracy(B_true, W_est_prior_l2 != 0)
-    constraint_values_prior_l2 = evaluate_prior_values(W_est_prior_l2, prior_knowledge, args.t)
-    print(acc_prior_l2)
+    if args.l in ('both', 'l2'):
+        print(f'>>> Evaluation with prior knowledge and l2 loss <<<')
+        start_time = time.perf_counter()
+        W_est_prior_l2, sol_success_l2 = notears_linear(X_std, lambda1=0.1, loss_type="l2", prior_knowledge=prior_knowledge, w_threshold=args.t)
+        running_time_prior_l2 = time.perf_counter() - start_time
+        assert utils.is_dag(W_est_prior_l2)
+        print("W_est_prior_l2:", W_est_prior_l2)
+        acc_prior_l2 = utils.count_accuracy(B_true, W_est_prior_l2 != 0)
+        constraint_values_prior_l2 = evaluate_prior_values(W_est_prior_l2, prior_knowledge, args.t)
+        print(acc_prior_l2)
 
-    print(f'>>> Evaluation without prior knowledge and {args.l} loss <<<')
-    W_est_no_prior_ll = linear.notears_linear(X_std, lambda1=0.1, loss_type=args.l, w_threshold=args.t)
-    assert utils.is_dag(W_est_no_prior_ll)
-    print("W_est_no_prior:", W_est_no_prior_ll)
-    acc_no_prior_ll = utils.count_accuracy(B_true, W_est_no_prior_ll != 0)
-    constraint_values_no_prior_ll = evaluate_prior_values(W_est_no_prior_ll, prior_knowledge, args.t)
-    print(acc_no_prior_ll)
+    if args.l in ('both', 'likelihood'):
+        print(f'>>> Evaluation without prior knowledge and likelihood loss <<<')
+        start_time = time.perf_counter()
+        W_est_no_prior_ll = linear.notears_linear(X_std, lambda1=0.1, loss_type="likelihood", w_threshold=args.t)
+        running_time_no_prior_ll = time.perf_counter() - start_time
+        assert utils.is_dag(W_est_no_prior_ll)
+        print("W_est_no_prior:", W_est_no_prior_ll)
+        acc_no_prior_ll = utils.count_accuracy(B_true, W_est_no_prior_ll != 0)
+        constraint_values_no_prior_ll = evaluate_prior_values(W_est_no_prior_ll, prior_knowledge, args.t)
+        print(acc_no_prior_ll)
 
-    print('>>> Evaluation without prior knowledge and l2 loss <<<')
-    W_est_no_prior_l2 = linear.notears_linear(X_std, lambda1=0.1, loss_type="l2", w_threshold=args.t)
-    assert utils.is_dag(W_est_no_prior_l2)
-    print("W_est_no_prior:", W_est_no_prior_l2)
-    acc_no_prior_l2 = utils.count_accuracy(B_true, W_est_no_prior_l2 != 0)
-    constraint_values_no_prior_l2 = evaluate_prior_values(W_est_no_prior_l2, prior_knowledge, args.t)
-    print(acc_no_prior_l2)
+    if args.l in ('both', 'l2'):
+        print('>>> Evaluation without prior knowledge and l2 loss <<<')
+        start_time = time.perf_counter()
+        W_est_no_prior_l2 = linear.notears_linear(X_std, lambda1=0.1, loss_type="l2", w_threshold=args.t)
+        running_time_no_prior_l2 = time.perf_counter() - start_time
+        assert utils.is_dag(W_est_no_prior_l2)
+        print("W_est_no_prior:", W_est_no_prior_l2)
+        acc_no_prior_l2 = utils.count_accuracy(B_true, W_est_no_prior_l2 != 0)
+        constraint_values_no_prior_l2 = evaluate_prior_values(W_est_no_prior_l2, prior_knowledge, args.t)
+        print(acc_no_prior_l2)
 
     results = {
         "B_true": B_true.tolist(),
@@ -852,21 +867,37 @@ if __name__ == '__main__':
         "X_std": X_std.tolist(),
         "varsortability_score": varsortability_score,
         "prior_knowledge": prior_knowledge,
-        "W_est_prior_ll": W_est_prior_ll.tolist(),
-        "W_est_prior_l2": W_est_prior_l2.tolist(),
-        "W_est_no_prior_ll": W_est_no_prior_ll.tolist(),
-        "W_est_no_prior_l2": W_est_no_prior_l2.tolist(),
-        "acc_prior_ll": acc_prior_ll,
-        "acc_prior_l2": acc_prior_l2,
-        "acc_no_prior_ll": acc_no_prior_ll,
-        "acc_no_prior_l2": acc_no_prior_l2,
-        "constraint_values_prior_ll": constraint_values_prior_ll,
-        "constraint_values_prior_l2": constraint_values_prior_l2,
-        "constraint_values_no_prior_ll": constraint_values_no_prior_ll,
-        "constraint_values_no_prior_l2": constraint_values_no_prior_l2,
-        "sol_success_ll": sol_success_ll,
-        "sol_success_l2": sol_success_l2
     }
+
+    optional_result_names = (
+        "W_est_prior_ll",
+        "W_est_prior_l2",
+        "W_est_no_prior_ll",
+        "W_est_no_prior_l2",
+        "acc_prior_ll",
+        "acc_prior_l2",
+        "acc_no_prior_ll",
+        "acc_no_prior_l2",
+        "constraint_values_prior_ll",
+        "constraint_values_prior_l2",
+        "constraint_values_no_prior_ll",
+        "constraint_values_no_prior_l2",
+        "sol_success_ll",
+        "sol_success_l2",
+        "running_time_prior_ll",
+        "running_time_prior_l2",
+        "running_time_no_prior_ll",
+        "running_time_no_prior_l2"
+    )
+    current_scope = locals()
+    for name in optional_result_names:
+        if name in current_scope:
+            value = current_scope[name]
+            if isinstance(value, np.ndarray):
+                value = value.tolist()
+            elif isinstance(value, np.generic):
+                value = value.item()
+            results[name] = value
 
     project_root = Path(__file__).resolve().parent.parent
     output_dir = project_root / f"linear_{args.p}"
