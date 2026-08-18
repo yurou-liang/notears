@@ -321,13 +321,13 @@ def loss(W, X):
     M = X @ W
     R = X - M
     residual_var = np.mean(R ** 2, axis=0)
-    A = np.eye(W.shape[0]) - W * W
+    A = np.eye(W.shape[0]) - W
     det_sign, log_det = np.linalg.slogdet(A)
     if det_sign == 0 or np.any(residual_var <= 0):
         return np.inf, np.zeros(W.size, dtype=W.dtype)
     loss = 0.5 * np.log(residual_var).sum() - log_det
     G_loss = -(X.T @ R) / (X.shape[0] * residual_var)
-    G_loss += 2.0 * W * np.linalg.inv(A).T
+    G_loss += W * np.linalg.inv(A).T
     return loss, G_loss.ravel()
 ####just for test, to delete later #######################################
 
@@ -371,13 +371,13 @@ def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, vi
             """Evaluate value and gradient of loss."""
             R = X - M
             residual_var = np.mean(R ** 2, axis=0)
-            A = np.eye(W.shape[0]) - W * W
+            A = np.eye(W.shape[0]) - W
             det_sign, log_det = np.linalg.slogdet(A)
             if det_sign == 0 or np.any(residual_var <= 0):
                 return np.inf, np.zeros(W.size, dtype=W.dtype)
             loss = 0.5 * np.log(residual_var).sum() - log_det
             G_loss = -(X.T @ R) / (X.shape[0] * residual_var)
-            G_loss += 2.0 * W * np.linalg.inv(A).T
+            G_loss += np.linalg.inv(A).T
             return loss, G_loss.ravel()
         elif loss_type == 'logistic':
             loss = 1.0 / X.shape[0] * (np.logaddexp(0, M) - X * M).sum()
@@ -787,7 +787,7 @@ if __name__ == '__main__':
     parser.add_argument('-d', '--num_nodes', dest='d', default=4, type=int)
     parser.add_argument('-e', '--num_edges', dest='e', default=1, type=int)
     parser.add_argument('-g', '--graph_type', dest='g', default="ER", type=str)
-    parser.add_argument('-l', '--loss_type', dest='l', default="l2", type=str)
+    parser.add_argument('-l', '--loss_type', dest='l', default="likelihood", type=str)
     parser.add_argument('-n', '--noise', dest='n', default="gauss", type=str)
     parser.add_argument('-p', '--prior_type', dest='p', default="mix", type=str)
     parser.add_argument('-r', '--prior_rate', dest='r', default=0.25, type=float)
@@ -813,21 +813,37 @@ if __name__ == '__main__':
         )
     print("prior_knowledge:", prior_knowledge)
 
-    print('>>> Evaluation with prior knowledge <<<')
-    W_est_prior, sol_success = notears_linear(X_std, lambda1=0.1, loss_type=args.l, prior_knowledge=prior_knowledge, w_threshold=args.t)
-    assert utils.is_dag(W_est_prior)
-    print("W_est_prior:", W_est_prior)
-    acc_prior = utils.count_accuracy(B_true, W_est_prior != 0)
-    constraint_values_prior = evaluate_prior_values(W_est_prior, prior_knowledge, args.t)
-    print(acc_prior)
+    print(f'>>> Evaluation with prior knowledge and {args.l} loss <<<')
+    W_est_prior_ll, sol_success_ll = notears_linear(X_std, lambda1=0.1, loss_type=args.l, prior_knowledge=prior_knowledge, w_threshold=args.t)
+    assert utils.is_dag(W_est_prior_ll)
+    print("W_est_prior_ll:", W_est_prior_ll)
+    acc_prior_ll = utils.count_accuracy(B_true, W_est_prior_ll != 0)
+    constraint_values_prior_ll = evaluate_prior_values(W_est_prior_ll, prior_knowledge, args.t)
+    print(acc_prior_ll)
 
-    print('>>> Evaluation without prior knowledge <<<')
-    W_est_no_prior = linear.notears_linear(X_std, lambda1=0.1, loss_type="l2", w_threshold=args.t)
-    assert utils.is_dag(W_est_no_prior)
-    print("W_est_no_prior:", W_est_no_prior)
-    acc_no_prior = utils.count_accuracy(B_true, W_est_no_prior != 0)
-    constraint_values_no_prior = evaluate_prior_values(W_est_no_prior, prior_knowledge, args.t)
-    print(acc_no_prior)
+    print(f'>>> Evaluation with prior knowledge and l2 loss <<<')
+    W_est_prior_l2, sol_success_l2 = notears_linear(X_std, lambda1=0.1, loss_type="l2", prior_knowledge=prior_knowledge, w_threshold=args.t)
+    assert utils.is_dag(W_est_prior_l2)
+    print("W_est_prior_l2:", W_est_prior_l2)
+    acc_prior_l2 = utils.count_accuracy(B_true, W_est_prior_l2 != 0)
+    constraint_values_prior_l2 = evaluate_prior_values(W_est_prior_l2, prior_knowledge, args.t)
+    print(acc_prior_l2)
+
+    print(f'>>> Evaluation without prior knowledge and {args.l} loss <<<')
+    W_est_no_prior_ll = linear.notears_linear(X_std, lambda1=0.1, loss_type=args.l, w_threshold=args.t)
+    assert utils.is_dag(W_est_no_prior_ll)
+    print("W_est_no_prior:", W_est_no_prior_ll)
+    acc_no_prior_ll = utils.count_accuracy(B_true, W_est_no_prior_ll != 0)
+    constraint_values_no_prior_ll = evaluate_prior_values(W_est_no_prior_ll, prior_knowledge, args.t)
+    print(acc_no_prior_ll)
+
+    print('>>> Evaluation without prior knowledge and l2 loss <<<')
+    W_est_no_prior_l2 = linear.notears_linear(X_std, lambda1=0.1, loss_type="l2", w_threshold=args.t)
+    assert utils.is_dag(W_est_no_prior_l2)
+    print("W_est_no_prior:", W_est_no_prior_l2)
+    acc_no_prior_l2 = utils.count_accuracy(B_true, W_est_no_prior_l2 != 0)
+    constraint_values_no_prior_l2 = evaluate_prior_values(W_est_no_prior_l2, prior_knowledge, args.t)
+    print(acc_no_prior_l2)
 
     results = {
         "B_true": B_true.tolist(),
@@ -836,13 +852,20 @@ if __name__ == '__main__':
         "X_std": X_std.tolist(),
         "varsortability_score": varsortability_score,
         "prior_knowledge": prior_knowledge,
-        "W_est_prior": W_est_prior.tolist(),
-        "W_est_no_prior": W_est_no_prior.tolist(),
-        "acc_prior": acc_prior,
-        "acc_no_prior": acc_no_prior,
-        "constraint_values_prior": constraint_values_prior,
-        "constraint_values_no_prior": constraint_values_no_prior,
-        "sol_success": sol_success
+        "W_est_prior_ll": W_est_prior_ll.tolist(),
+        "W_est_prior_l2": W_est_prior_l2.tolist(),
+        "W_est_no_prior_ll": W_est_no_prior_ll.tolist(),
+        "W_est_no_prior_l2": W_est_no_prior_l2.tolist(),
+        "acc_prior_ll": acc_prior_ll,
+        "acc_prior_l2": acc_prior_l2,
+        "acc_no_prior_ll": acc_no_prior_ll,
+        "acc_no_prior_l2": acc_no_prior_l2,
+        "constraint_values_prior_ll": constraint_values_prior_ll,
+        "constraint_values_prior_l2": constraint_values_prior_l2,
+        "constraint_values_no_prior_ll": constraint_values_no_prior_ll,
+        "constraint_values_no_prior_l2": constraint_values_no_prior_l2,
+        "sol_success_ll": sol_success_ll,
+        "sol_success_l2": sol_success_l2
     }
 
     project_root = Path(__file__).resolve().parent.parent
