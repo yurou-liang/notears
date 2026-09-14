@@ -773,7 +773,7 @@ def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, vi
                 break
         w_est, l2_violation = w_new, l2_violation_new
         alpha += rho * c_e_new
-        beta = np.maximum( beta + rho * c_i_new, 0.0)
+        beta = np.maximum(beta + rho * c_i_new, 0.0)
         if max_violation_new <= violation_tol or rho >= rho_max:
             break
     W_est = _adj(w_est)

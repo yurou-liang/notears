@@ -5,6 +5,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 import math
+import scipy.linalg as slin
 
 
 class NotearsMLP(nn.Module):
@@ -14,6 +15,7 @@ class NotearsMLP(nn.Module):
         assert dims[-1] == 1
         d = dims[0]
         self.dims = dims
+        
         # fc1: variable splitting for l1
         self.fc1_pos = nn.Linear(d, d * dims[1], bias=bias)
         self.fc1_neg = nn.Linear(d, d * dims[1], bias=bias)
@@ -74,7 +76,7 @@ class NotearsMLP(nn.Module):
         reg = torch.sum(self.fc1_pos.weight + self.fc1_neg.weight)
         return reg
 
-    @torch.no_grad()
+    # @torch.no_grad()
     def fc1_to_adj(self) -> np.ndarray:  # [j * m1, i] -> [i, j]
         """Get W from fc1 weights, take 2-norm over m1 dim"""
         d = self.dims[0]
@@ -82,7 +84,7 @@ class NotearsMLP(nn.Module):
         fc1_weight = fc1_weight.view(d, -1, d)  # [j, m1, i]
         A = torch.sum(fc1_weight * fc1_weight, dim=1).t()  # [i, j]
         W = torch.sqrt(A)  # [i, j]
-        W = W.cpu().detach().numpy()  # [i, j]
+        # W = W.cpu().detach().numpy()  # [i, j]
         return W
 
 
@@ -162,48 +164,336 @@ def squared_loss(output, target):
     loss = 0.5 / n * torch.sum((output - target) ** 2)
     return loss
 
+def likelihood_loss(output, target):
+    """likelihood loss for tensors with shape [n, d]."""
 
-def dual_ascent_step(model, X, lambda1, lambda2, rho, alpha, h, rho_max):
+    residual_mean = torch.mean(
+        (target - output) ** 2,
+        dim=0,
+    )
+    residual_mean = residual_mean.clamp_min(
+        torch.finfo(residual_mean.dtype).tiny
+    )
+
+    return 0.5 * torch.sum(torch.log(residual_mean))
+
+def forbid_edges(W, edge_pairs):
+    """forbid edges from the list of index pairs.
+    
+    Args:
+        W (np.ndarray): [d, d] weight matrix
+        pairs (list): List of (i, j) edge pairs
+
+    Returns:
+        float: Values Sum of W[i, j] for each (i, j) pair
+    """
+    if not edge_pairs:
+        raise ValueError("edge_pairs must not be empty")
+    return torch.stack([W[i, j] ** 2 for i, j in edge_pairs]).mean()
+
+def exist_edges(W, w_thres, edge_pairs):
+    """Return a vector of edge residuals for the given index pairs.
+    
+    Args:
+        W (np.ndarray): [d, d] weight matrix
+        w_thres (float): threshold for edge existence
+        pairs (list): List of (i, j) edge pairs
+
+    Returns:
+        np.ndarray (1D): Vector of W[i, j] - w_thres for each (i, j) pair
+    """
+    if not edge_pairs:
+        return W.new_empty((0,))
+    residuals = torch.stack([
+        W[i, j]**2 - w_thres**2
+        for i, j in edge_pairs
+    ])
+
+    return residuals
+
+def forbid_paths(W, path_pairs):
+
+    """Compute the forbidden-path penalty and its gradient.
+    Args:
+        W: Array of shape (d, d).
+        path_pairs: Sequence of (start, end) index pairs.
+    Returns:
+        value: Scalar penalty.
+        gradient: Flattened gradient with respect to W.
+    """
+
+    if len(path_pairs) == 0:
+        raise ValueError("path_pairs must not be empty")
+    A = W * W
+    E = torch.matrix_exp(A)
+    return torch.stack([E[i, j] for i, j in path_pairs]).mean()
+
+def exist_paths(W, w_thres, path_pairs):
+    if not path_pairs:
+        return W.new_empty((0,))
+    X = W * W - w_thres * w_thres
+    A = torch.relu(X)
+    E = torch.matrix_exp(A)
+    residuals = torch.stack([E[i, j] for i, j in path_pairs])
+    return residuals
+
+def forbid_trek(W, trek_pairs):
+    """Return the mean forbidden-trek penalty and its gradient."""
+    if not trek_pairs:
+        raise ValueError("trek_pairs must not be empty")
+    E = torch.matrix_exp(W * W)
+    T = E.T @ E
+    return torch.stack([T[i, j] for i, j in trek_pairs]).mean()
+
+def exist_trek(W, w_thres, trek_pairs):
+
+    """Return trek residuals and their Jacobian.
+
+    Args:
+        W: Weight matrix with shape (d, d).
+        w_thres: Threshold for trek existence.
+        trek_pairs: Sequence of endpoint pairs (i, j).
+        sharpness: Softplus sharpness parameter.
+
+    Returns:
+        residuals: Array with shape (len(trek_pairs),).
+        J: Jacobian with shape (len(trek_pairs), W.size).
+    """
+    X = W * W - w_thres * w_thres
+    A = torch.relu(X)
+    E = torch.matrix_exp(A)
+    T = E.T @ E
+
+    if not trek_pairs:
+        return W.new_empty((0,))
+
+    residuals = torch.stack([
+        T[i, j]
+        for i, j in trek_pairs
+    ])
+
+    return residuals
+
+def combined_equality_constraints(W, forbid_edge_pairs, forbid_path_pairs, forbid_trek_pairs):
+    """Combine active equality constraints and their Jacobians.
+
+    Returns:
+        values: Shape (m,), where m is the number of active constraints.
+        jacobian: Shape (m, d*d).
+    """
+    values = []
+
+    if forbid_edge_pairs:
+        edge_value = forbid_edges(
+            W, forbid_edge_pairs
+        )
+        values.append(edge_value)
+
+    if forbid_path_pairs:
+        path_value = forbid_paths(
+            W, forbid_path_pairs
+        )
+        values.append(path_value)
+
+    if forbid_trek_pairs:
+        trek_value = forbid_trek(
+            W, forbid_trek_pairs
+        )
+        values.append(trek_value)
+
+    if not values:
+        return W.new_empty((0,))
+    return torch.stack(values)
+
+def combined_inequality_constraints(W, exist_edge_pairs, exist_path_pairs, exist_trek_pairs, w_threshold):
+    """Combine active inequality constraints and their Jacobians.
+
+    Returns:
+        values: Shape (m,), with one value per pair.
+        jacobian: Shape (m, d*d).
+    """
+    values = []
+
+    if exist_edge_pairs:
+        edge_values = exist_edges(
+            W,
+            w_threshold,
+            exist_edge_pairs,
+        )
+        values.append(edge_values.reshape(-1))
+
+    if exist_path_pairs:
+        path_values = exist_paths(
+            W,
+            w_threshold,
+            exist_path_pairs,
+        )
+        values.append(path_values.reshape(-1))
+
+    if exist_trek_pairs:
+        trek_values = exist_trek(
+            W,
+            w_threshold,
+            exist_trek_pairs,
+        )
+        values.append(trek_values.reshape(-1))
+
+    if not values:
+        return W.new_empty((0,))
+    return torch.cat(values)
+
+def violation(c_e, c_i):
+    active_i = torch.relu(c_i)
+
+    all_violations = torch.cat([
+        c_e.reshape(-1),
+        active_i.reshape(-1),
+    ])
+
+    if all_violations.numel() == 0:
+        zero = c_e.new_zeros(())
+        return zero, zero
+
+    l2_violation = torch.linalg.vector_norm(
+        all_violations,
+        ord=2,
+    )
+
+    max_violation = torch.linalg.vector_norm(
+        all_violations,
+        ord=float("inf"),
+    )
+
+    return l2_violation, max_violation
+
+def dual_ascent_step(model, X, lambda1, lambda2, rho, alpha, beta, rho_max, prior_knowledge, loss_type, w_threshold, epsilon):
     """Perform one step of dual ascent in augmented Lagrangian."""
-    h_new = None
+    if prior_knowledge is None:
+        prior_knowledge = {}
+
+    forbid_edge_pairs = prior_knowledge.get("forbid_edge_pairs", [])
+    forbid_path_pairs = prior_knowledge.get("forbid_path_pairs", [])
+    forbid_trek_pairs = prior_knowledge.get("forbid_trek_pairs", [])
+
+    exist_edge_pairs = prior_knowledge.get("exist_edge_pairs", [])
+    exist_path_pairs = prior_knowledge.get("exist_path_pairs", [])
+    exist_trek_pairs = prior_knowledge.get("exist_trek_pairs", [])
+
     optimizer = LBFGSBScipy(model.parameters())
     X_torch = torch.from_numpy(X)
     while rho < rho_max:
         def closure():
             optimizer.zero_grad()
             X_hat = model(X_torch)
-            loss = squared_loss(X_hat, X_torch)
+            if loss_type == 'l2':
+                loss = squared_loss(X_hat, X_torch)
+            elif loss_type == 'likelihood':
+                loss = likelihood_loss(X_hat, X_torch)
+            W_est = model.fc1_to_adj()
             h_val = model.h_func()
-            penalty = 0.5 * rho * h_val * h_val + alpha * h_val
+            c_e = combined_equality_constraints(
+                W_est,
+                forbid_edge_pairs,
+                forbid_path_pairs,
+                forbid_trek_pairs,
+            )
+
+            c_e = torch.cat([
+                h_val.reshape(1),
+                c_e.reshape(-1),
+            ])
+            i_value = combined_inequality_constraints(W_est, exist_edge_pairs, exist_path_pairs, exist_trek_pairs, w_threshold)
+            c_i = epsilon - i_value
+            z = beta + rho * c_i
+            positive_part = torch.relu(z)
+
+            penalty = (
+                0.5 * rho * torch.sum(c_e ** 2)
+                + torch.dot(alpha, c_e)
+                + (1.0 / (2.0 * rho))
+                * (
+                    torch.sum(positive_part ** 2)
+                    - torch.sum(beta ** 2)
+                )
+            )
             l2_reg = 0.5 * lambda2 * model.l2_reg()
             l1_reg = lambda1 * model.fc1_l1_reg()
             primal_obj = loss + penalty + l2_reg + l1_reg
             primal_obj.backward()
             return primal_obj
         optimizer.step(closure)  # NOTE: updates model in-place
+        W_est_new = model.fc1_to_adj()
+        h_val_new = model.h_func()
+        c_e_new = combined_equality_constraints(
+            W_est_new,
+            forbid_edge_pairs,
+            forbid_path_pairs,
+            forbid_trek_pairs,
+        )
+
+        c_e_new = torch.cat([
+            h_val_new.reshape(1),
+            c_e_new.reshape(-1),
+        ])
+        i_value_new = combined_inequality_constraints(W_est_new, exist_edge_pairs, exist_path_pairs, exist_trek_pairs, w_threshold)
+        c_i_new = epsilon - i_value_new
+        ###############################
+        print("equality constraints:", c_e_new)
+        print("inequality constraints:", c_i_new)
+        ###############################
         with torch.no_grad():
-            h_new = model.h_func().item()
-        if h_new > 0.25 * h:
-            rho *= 10
-        else:
-            break
-    alpha += rho * h_new
-    return rho, alpha, h_new
+            l2_violation_new, _ = violation(c_e_new, c_i_new,)
+            if l2_violation_new > 0.25 * l2_violation:
+                rho *= 10
+            else:
+                break
+        W_est, l2_violation = W_est_new, l2_violation_new
+    alpha += rho * c_e_new
+    beta = torch.relu( beta + rho * c_i_new)
+    return rho, alpha, beta, c_e_new, c_i_new
 
 
 def notears_nonlinear(model: nn.Module,
                       X: np.ndarray,
+                      prior_knowledge=None,
                       lambda1: float = 0.,
                       lambda2: float = 0.,
                       max_iter: int = 100,
-                      h_tol: float = 1e-8,
+                      violation_tol: float = 1e-8,
                       rho_max: float = 1e+16,
                       w_threshold: float = 0.3):
+    if prior_knowledge is None:
+        prior_knowledge = {}
+
+    forbid_edge_pairs = prior_knowledge.get("forbid_edge_pairs", [])
+    forbid_path_pairs = prior_knowledge.get("forbid_path_pairs", [])
+    forbid_trek_pairs = prior_knowledge.get("forbid_trek_pairs", [])
+
+    exist_edge_pairs = prior_knowledge.get("exist_edge_pairs", [])
+    exist_path_pairs = prior_knowledge.get("exist_path_pairs", [])
+    exist_trek_pairs = prior_knowledge.get("exist_trek_pairs", [])
     rho, alpha, h = 1.0, 0.0, np.inf
+    w_new, c_e_new, c_i_new = None, None, None
+    alpha = np.zeros(equality_len, dtype=float)
+    beta = np.zeros(inequality_len, dtype=float)
+    n, d = X.shape
+    w_est = np.zeros(2 * d * d)  # double w_est into (w_pos, w_neg)
+    rho = 1.0
+    equality_len = 1 + sum(
+    bool(pairs)
+    for pairs in (
+        forbid_edge_pairs,
+        forbid_path_pairs,
+        forbid_trek_pairs,
+        )
+    )
+    inequality_len = len(exist_edge_pairs) + len(exist_path_pairs) + len(exist_trek_pairs)
+    l2_violation = np.inf
     for _ in range(max_iter):
         rho, alpha, h = dual_ascent_step(model, X, lambda1, lambda2,
                                          rho, alpha, h, rho_max)
-        if h <= h_tol or rho >= rho_max:
+        _, max_violation_new = violation(c_e_new, c_i_new,)
+        if max_violation_new <= violation_tol or rho >= rho_max:
             break
     W_est = model.fc1_to_adj()
     W_est[np.abs(W_est) < w_threshold] = 0
