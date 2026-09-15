@@ -805,7 +805,7 @@ if __name__ == '__main__':
     filename = f"linear_{args.p}_{graph_type}{args.e}_d{d}_{sem_type}_rate{args.r}_seed{args.s}.json"
 
     noise_scale = np.exp(np.random.uniform(np.log(0.5), np.log(2.0), size=d,))
-    X = utils.simulate_linear_sem(W_true, n, sem_type)
+    X = utils.simulate_linear_sem(W_true, n, sem_type, noise_scale)
     scaler = StandardScaler()
     X_std = scaler.fit_transform(X)
     varsortability_score = varsortability(X_std, W_true)

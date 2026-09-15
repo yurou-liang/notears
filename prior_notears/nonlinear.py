@@ -1,9 +1,16 @@
+import argparse
+import json
 from prior_notears.locally_connected import LocallyConnected
 from prior_notears.lbfgsb_scipy import LBFGSBScipy
 from prior_notears.trace_expm import trace_expm
 import torch
 import torch.nn as nn
 import numpy as np
+from notears import nonlinear
+from pathlib import Path
+from sklearn.preprocessing import StandardScaler
+from Varsortability.src.varsortability import varsortability
+import time
 
 
 class NotearsMLP(nn.Module):
@@ -107,7 +114,7 @@ def forbid_edges(W_squared, edge_pairs):
     """forbid edges from the list of index pairs.
     
     Args:
-        W_squared (np.ndarray): [d, d] squared weight matrix
+        W_squared (torch.Tensor): [d, d] squared weight matrix
         pairs (list): List of (i, j) edge pairs
 
     Returns:
@@ -121,12 +128,12 @@ def exist_edges(W_squared, w_thres, edge_pairs):
     """Return a vector of edge residuals for the given index pairs.
     
     Args:
-        W_squared (np.ndarray): [d, d] squared weight matrix
+        W_squared (torch.Tensor): [d, d] squared weight matrix
         w_thres (float): threshold for edge existence
         pairs (list): List of (i, j) edge pairs
 
     Returns:
-        np.ndarray (1D): Vector of W_squared[i, j] - w_thres for each (i, j) pair
+        torch.Tensor (1D): Vector of W_squared[i, j] - w_thres for each (i, j) pair
     """
     if not edge_pairs:
         return W_squared.new_empty((0,))
@@ -372,8 +379,8 @@ def dual_ascent_step(model, X_torch, lambda1, lambda2, rho, alpha, beta, rho_max
             if l2_violation_new > 0.25 * l2_violation:
                 rho *= 10
             else:
-                l2_violation = l2_violation_new
                 break
+    l2_violation = l2_violation_new
     with torch.no_grad():
         alpha.add_(rho * c_e_new)
         beta.copy_(torch.relu(beta + rho * c_i_new))
@@ -384,8 +391,8 @@ def notears_nonlinear(model: nn.Module,
                       X: np.ndarray,
                       prior_knowledge=None,
                       loss_type: str = 'likelihood',                     
-                      lambda1: float = 0.,
-                      lambda2: float = 0.,
+                      lambda1: float = 0.01,
+                      lambda2: float = 0.01,
                       max_iter: int = 100,
                       violation_tol: float = 1e-8,
                       rho_max: float = 1e+16,
@@ -484,23 +491,50 @@ def evaluate_prior_values(W, prior_knowledge, w_threshold):
 def main():
     torch.set_default_dtype(torch.double)
     np.set_printoptions(precision=3)
+    parser = argparse.ArgumentParser(prog='nonlinear NOTEARS with prior knowledge',)
+    parser.add_argument('-s', '--seed', dest='s',  default=42, type=int)
+    parser.add_argument('-d', '--num_nodes', dest='d', default=4, type=int)
+    parser.add_argument('-e', '--num_edges', dest='e', default=1, type=int)
+    parser.add_argument('-g', '--graph_type', dest='g', default="ER", type=str)
+    parser.add_argument('-l', '--loss_type', dest='l', default="both", type=str)
+    parser.add_argument('-n', '--noise', dest='n', default="mlp", type=str)
+    parser.add_argument('-p', '--prior_type', dest='p', default="mix", type=str)
+    parser.add_argument('-r', '--prior_rate', dest='r', default=0.25, type=float)
+    parser.add_argument('-t', '--w_threshold', dest='t', default=0.3, type=float)
+    args = parser.parse_args()
 
-    import prior_notears.utils as ut
-    ut.set_random_seed(123)
+    from prior_notears import utils
+    utils.set_random_seed(args.s)
 
-    n, d, s0, graph_type, sem_type = 200, 5, 9, 'ER', 'mim'
-    B_true = ut.simulate_dag(d, s0, graph_type)
-    np.savetxt('W_true.csv', B_true, delimiter=',')
+    n, d, s0, graph_type, sem_type = 10*args.d, args.d, args.e*args.d, args.g, args.n
+    B_true = utils.simulate_dag(d, s0, graph_type)
+    print("B_true:", B_true)
+    W_true = utils.simulate_parameter(B_true)
+    filename = f"nonlinear_{args.p}_{graph_type}{args.e}_d{d}_{sem_type}_rate{args.r}_seed{args.s}.json"
 
-    X = ut.simulate_nonlinear_sem(B_true, n, sem_type)
-    np.savetxt('X.csv', X, delimiter=',')
+    noise_scale = np.exp(np.random.uniform(np.log(0.5), np.log(2.0), size=d,))
+    X = utils.simulate_nonlinear_sem(B_true, n, sem_type, noise_scale)
+    scaler = StandardScaler()
+    X_std = scaler.fit_transform(X)
+    varsortability_score = varsortability(X_std, W_true)
+    prior_knowledge = utils.generate_prior_knowledge(
+            B_true,
+            prior_rate=args.r,
+            prior_type=args.p,
+        )
+    print("prior_knowledge:", prior_knowledge)
 
-    model = NotearsMLP(dims=[d, 10, 1], bias=True)
-    W_est = notears_nonlinear(model, X, lambda1=0.01, lambda2=0.01)
-    assert ut.is_dag(W_est)
-    np.savetxt('W_est.csv', W_est, delimiter=',')
-    acc = ut.count_accuracy(B_true, W_est != 0)
-    print(acc)
+    if args.l in ('both', 'likelihood'):
+        print(f'>>> Evaluation with prior knowledge and likelihood loss <<<')
+        start_time = time.perf_counter()
+        model = NotearsMLP(dims=[d, 10, 1], bias=True)
+        W_est_prior_ll = notears_nonlinear(model, X_std, prior_knowledge=prior_knowledge, loss_type="likelihood", w_threshold=args.t)
+        running_time_prior_ll = time.perf_counter() - start_time
+        assert utils.is_dag(W_est_prior_ll)
+        print("W_est_prior_ll:", W_est_prior_ll)
+        acc_prior_ll = utils.count_accuracy(B_true, W_est_prior_ll != 0)
+        constraint_values_prior_ll = evaluate_prior_values(W_est_prior_ll, prior_knowledge, args.t)
+        print(acc_prior_ll)
 
 
 if __name__ == '__main__':

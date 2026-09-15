@@ -344,7 +344,14 @@ def simulate_nonlinear_sem(B, n, sem_type, noise_scale=None):
         return x
 
     d = B.shape[0]
-    scale_vec = noise_scale if noise_scale else np.ones(d)
+    if noise_scale is None:
+        scale_vec = np.ones(d)
+    elif np.isscalar(noise_scale):
+        scale_vec = noise_scale * np.ones(d)
+    else:
+        if len(noise_scale) != d:
+            raise ValueError('noise scale must be a scalar or has length d')
+        scale_vec = noise_scale
     X = np.zeros([n, d])
     G = ig.Graph.Adjacency(B.tolist())
     ordered_vertices = G.topological_sorting()
