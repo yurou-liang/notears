@@ -26,6 +26,18 @@ def notears_linear(X, lambda1, loss_type, max_iter=100, h_tol=1e-8, rho_max=1e+1
             R = X - M
             loss = 0.5 / X.shape[0] * (R ** 2).sum()
             G_loss = - 1.0 / X.shape[0] * X.T @ R
+        elif loss_type == 'likelihood':
+            """Evaluate value and gradient of loss."""
+            R = X - M
+            residual_var = np.mean(R ** 2, axis=0)
+            A = np.eye(W.shape[0]) - W
+            det_sign, log_det = np.linalg.slogdet(A)
+            if det_sign == 0 or np.any(residual_var <= 0):
+                return np.inf, np.zeros_like(W)
+            loss = 0.5 * np.log(residual_var).sum() - log_det
+            G_loss = -(X.T @ R) / (X.shape[0] * residual_var)
+            G_loss += np.linalg.inv(A).T
+            return loss, G_loss
         elif loss_type == 'logistic':
             loss = 1.0 / X.shape[0] * (np.logaddexp(0, M) - X * M).sum()
             G_loss = 1.0 / X.shape[0] * X.T @ (sigmoid(M) - X)
@@ -64,8 +76,9 @@ def notears_linear(X, lambda1, loss_type, max_iter=100, h_tol=1e-8, rho_max=1e+1
 
     n, d = X.shape
     w_est, rho, alpha, h = np.zeros(2 * d * d), 1.0, 0.0, np.inf  # double w_est into (w_pos, w_neg)
-    bnds = [(0, 0) if i == j else (0, None) for _ in range(2) for i in range(d) for j in range(d)]
-    if loss_type == 'l2':
+    weight_bound = 10.0
+    bnds = [(0, 0) if i == j else (0, weight_bound) for _ in range(2) for i in range(d) for j in range(d)]
+    if loss_type in ('l2', 'likelihood'):
         X = X - np.mean(X, axis=0, keepdims=True)
     for _ in range(max_iter):
         w_new, h_new = None, None

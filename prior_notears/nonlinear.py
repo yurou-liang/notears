@@ -366,7 +366,7 @@ def violation(c_e, c_i):
 
     return l2_violation, max_violation
 
-def dual_ascent_step(model, X, lambda1, lambda2, rho, alpha, beta, rho_max, prior_knowledge, loss_type, w_threshold, epsilon):
+def dual_ascent_step(model, X_torch, lambda1, lambda2, rho, alpha, beta, rho_max, prior_knowledge, loss_type, w_threshold, epsilon, l2_violation):
     """Perform one step of dual ascent in augmented Lagrangian."""
     if prior_knowledge is None:
         prior_knowledge = {}
@@ -380,7 +380,6 @@ def dual_ascent_step(model, X, lambda1, lambda2, rho, alpha, beta, rho_max, prio
     exist_trek_pairs = prior_knowledge.get("exist_trek_pairs", [])
 
     optimizer = LBFGSBScipy(model.parameters())
-    X_torch = torch.from_numpy(X)
     while rho < rho_max:
         def closure():
             optimizer.zero_grad()
@@ -389,6 +388,8 @@ def dual_ascent_step(model, X, lambda1, lambda2, rho, alpha, beta, rho_max, prio
                 loss = squared_loss(X_hat, X_torch)
             elif loss_type == 'likelihood':
                 loss = likelihood_loss(X_hat, X_torch)
+            else:
+                raise ValueError('unknown loss type')
             W_est = model.fc1_to_adj()
             h_val = model.h_func()
             c_e = combined_equality_constraints(
@@ -446,22 +447,25 @@ def dual_ascent_step(model, X, lambda1, lambda2, rho, alpha, beta, rho_max, prio
             if l2_violation_new > 0.25 * l2_violation:
                 rho *= 10
             else:
+                l2_violation = l2_violation_new
                 break
-        W_est, l2_violation = W_est_new, l2_violation_new
-    alpha += rho * c_e_new
-    beta = torch.relu( beta + rho * c_i_new)
-    return rho, alpha, beta, c_e_new, c_i_new
+    with torch.no_grad():
+        alpha.add_(rho * c_e_new)
+        beta.copy_(torch.relu(beta + rho * c_i_new))
+    return rho, alpha, beta, c_e_new, c_i_new, l2_violation
 
 
 def notears_nonlinear(model: nn.Module,
                       X: np.ndarray,
                       prior_knowledge=None,
+                      loss_type: str = 'likelihood',                     
                       lambda1: float = 0.,
                       lambda2: float = 0.,
                       max_iter: int = 100,
                       violation_tol: float = 1e-8,
                       rho_max: float = 1e+16,
-                      w_threshold: float = 0.3):
+                      w_threshold: float = 0.3,
+                      epsilon: float = 1e-1):
     if prior_knowledge is None:
         prior_knowledge = {}
 
@@ -472,13 +476,13 @@ def notears_nonlinear(model: nn.Module,
     exist_edge_pairs = prior_knowledge.get("exist_edge_pairs", [])
     exist_path_pairs = prior_knowledge.get("exist_path_pairs", [])
     exist_trek_pairs = prior_knowledge.get("exist_trek_pairs", [])
-    rho, alpha, h = 1.0, 0.0, np.inf
-    w_new, c_e_new, c_i_new = None, None, None
-    alpha = np.zeros(equality_len, dtype=float)
-    beta = np.zeros(inequality_len, dtype=float)
-    n, d = X.shape
-    w_est = np.zeros(2 * d * d)  # double w_est into (w_pos, w_neg)
+
     rho = 1.0
+    parameter = next(model.parameters())
+    l2_violation = torch.tensor(
+    float("inf"), dtype=parameter.dtype, device=parameter.device
+    )
+    c_e_new, c_i_new = None, None, None
     equality_len = 1 + sum(
     bool(pairs)
     for pairs in (
@@ -488,15 +492,21 @@ def notears_nonlinear(model: nn.Module,
         )
     )
     inequality_len = len(exist_edge_pairs) + len(exist_path_pairs) + len(exist_trek_pairs)
-    l2_violation = np.inf
+    X_torch = torch.as_tensor(
+        X, dtype=parameter.dtype, device=parameter.device
+    )
+    alpha = torch.zeros(equality_len, dtype=parameter.dtype, device=parameter.device)
+    beta = torch.zeros(inequality_len, dtype=parameter.dtype, device=parameter.device)
+
     for _ in range(max_iter):
-        rho, alpha, h = dual_ascent_step(model, X, lambda1, lambda2,
-                                         rho, alpha, h, rho_max)
+        rho, alpha, beta, c_e_new, c_i_new, l2_violation = dual_ascent_step(model, X_torch, lambda1, lambda2, rho, alpha, beta, rho_max, 
+                                                              prior_knowledge, loss_type, w_threshold, epsilon, l2_violation)
         _, max_violation_new = violation(c_e_new, c_i_new,)
         if max_violation_new <= violation_tol or rho >= rho_max:
             break
-    W_est = model.fc1_to_adj()
-    W_est[np.abs(W_est) < w_threshold] = 0
+    with torch.no_grad():        
+        W_est = model.fc1_to_adj()
+        W_est[torch.abs(W_est) < w_threshold] = 0
     return W_est
 
 
