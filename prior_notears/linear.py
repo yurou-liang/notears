@@ -794,6 +794,7 @@ if __name__ == '__main__':
     parser.add_argument('-p', '--prior_type', dest='p', default="mix", type=str)
     parser.add_argument('-r', '--prior_rate', dest='r', default=0.25, type=float)
     parser.add_argument('-t', '--w_threshold', dest='t', default=0.3, type=float)
+    parser.add_argument('-ep', '--epsilon', dest='ep', default=1e-1, type=float)
     args = parser.parse_args()
 
     from prior_notears import utils
@@ -802,7 +803,7 @@ if __name__ == '__main__':
     B_true = utils.simulate_dag(d, s0, graph_type)
     print("B_true:", B_true)
     W_true = utils.simulate_parameter(B_true)
-    filename = f"linear_{args.p}_{graph_type}{args.e}_d{d}_{sem_type}_rate{args.r}_seed{args.s}.json"
+    filename = f"linear_{args.p}_{graph_type}{args.e}_d{d}_{sem_type}_rate{args.r}_epsilon{args.ep}_seed{args.s}.json"
 
     noise_scale = np.exp(np.random.uniform(np.log(0.5), np.log(2.0), size=d,))
     X = utils.simulate_linear_sem(W_true, n, sem_type, noise_scale)
@@ -819,7 +820,7 @@ if __name__ == '__main__':
     if args.l in ('both', 'likelihood'):
         print(f'>>> Evaluation with prior knowledge and likelihood loss <<<')
         start_time = time.perf_counter()
-        W_est_prior_ll, sol_success_ll = notears_linear(X_std, lambda1=0.1, loss_type="likelihood", prior_knowledge=prior_knowledge, w_threshold=args.t)
+        W_est_prior_ll, sol_success_ll = notears_linear(X_std, lambda1=0.1, loss_type="likelihood", prior_knowledge=prior_knowledge, w_threshold=args.t, epsilon=args.ep)
         running_time_prior_ll = time.perf_counter() - start_time
         assert utils.is_dag(W_est_prior_ll)
         print("W_est_prior_ll:", W_est_prior_ll)
@@ -830,7 +831,7 @@ if __name__ == '__main__':
     if args.l in ('both', 'l2'):
         print(f'>>> Evaluation with prior knowledge and l2 loss <<<')
         start_time = time.perf_counter()
-        W_est_prior_l2, sol_success_l2 = notears_linear(X_std, lambda1=0.1, loss_type="l2", prior_knowledge=prior_knowledge, w_threshold=args.t)
+        W_est_prior_l2, sol_success_l2 = notears_linear(X_std, lambda1=0.1, loss_type="l2", prior_knowledge=prior_knowledge, w_threshold=args.t, epsilon=args.ep)
         running_time_prior_l2 = time.perf_counter() - start_time
         assert utils.is_dag(W_est_prior_l2)
         print("W_est_prior_l2:", W_est_prior_l2)
