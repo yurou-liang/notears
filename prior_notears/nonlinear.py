@@ -440,6 +440,7 @@ def notears_nonlinear(model: nn.Module,
     return W_est
 
 def evaluate_prior_values(W, prior_knowledge, w_threshold):
+    W = torch.as_tensor(W, dtype=torch.get_default_dtype())
     W_squared = W * W
     constraint_values = {}
 
@@ -497,19 +498,20 @@ def main():
     parser.add_argument('-e', '--num_edges_per_node', dest='e', default=1, type=int)
     parser.add_argument('-g', '--graph_type', dest='g', default="ER", type=str)
     parser.add_argument('-l', '--loss_type', dest='l', default="both", type=str)
-    parser.add_argument('-m', '--sem_type', dest='n', default="mlp", type=str)
+    parser.add_argument('-m', '--sem_type', dest='sem_type', default="mlp", type=str)
     parser.add_argument('-p', '--prior_type', dest='p', default="mix", type=str)
     parser.add_argument('-r', '--prior_rate', dest='r', default=0.25, type=float)
     parser.add_argument('-t', '--w_threshold', dest='t', default=0.3, type=float)
+    parser.add_argument('-ep', '--epsilon', dest='ep', default=1e-1, type=float)
     args = parser.parse_args()
 
     from prior_notears import utils
     utils.set_random_seed(args.s)
 
-    n, d, s0, graph_type, sem_type = 10*args.d, args.d, args.e*args.d, args.g, args.m
+    n, d, s0, graph_type, sem_type = 10*args.d, args.d, args.e*args.d, args.g, args.sem_type
     B_true = utils.simulate_dag(d, s0, graph_type)
     print("B_true:", B_true)
-    filename = f"nonlinear_{args.p}_{graph_type}{args.e}_d{d}_{sem_type}_rate{args.r}_seed{args.s}.json"
+    filename = f"nonlinear_{args.p}_{graph_type}{args.e}_d{d}_{sem_type}_rate{args.r}_epsilon{args.ep}_seed{args.s}.json"
 
     noise_scale = np.exp(np.random.uniform(np.log(0.5), np.log(2.0), size=d,))
     X, W_true = utils.simulate_nonlinear_sem(
@@ -534,7 +536,7 @@ def main():
         start_time = time.perf_counter()
         torch.manual_seed(args.s)
         model = NotearsMLP(dims=[d, 10, 1], bias=True)
-        W_est_prior_ll = notears_nonlinear(model, X_std, prior_knowledge=prior_knowledge, loss_type="likelihood", w_threshold=args.t)
+        W_est_prior_ll = notears_nonlinear(model, X_std, prior_knowledge=prior_knowledge, loss_type="likelihood", w_threshold=args.t, epsilon=args.ep)
         running_time_prior_ll = time.perf_counter() - start_time
         assert utils.is_dag(W_est_prior_ll)
         print("W_est_prior_ll:", W_est_prior_ll)
@@ -547,7 +549,7 @@ def main():
         start_time = time.perf_counter()
         torch.manual_seed(args.s)
         model = NotearsMLP(dims=[d, 10, 1], bias=True)
-        W_est_prior_l2 = notears_nonlinear(model, X_std, prior_knowledge=prior_knowledge, loss_type="l2", w_threshold=args.t)
+        W_est_prior_l2 = notears_nonlinear(model, X_std, prior_knowledge=prior_knowledge, loss_type="l2", w_threshold=args.t, epsilon=args.ep)
         running_time_prior_l2 = time.perf_counter() - start_time
         assert utils.is_dag(W_est_prior_l2)
         print("W_est_prior_l2:", W_est_prior_l2)
