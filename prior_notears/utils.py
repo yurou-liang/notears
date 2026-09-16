@@ -2,11 +2,13 @@ import numpy as np
 from scipy.special import expit as sigmoid
 import igraph as ig
 import random
+import torch
 
 
 def set_random_seed(seed):
     random.seed(seed)
     np.random.seed(seed)
+    torch.manual_seed(seed)
 
 
 def is_dag(W):
@@ -297,7 +299,9 @@ def simulate_linear_sem(W, n, sem_type, noise_scale=None):
     return X
 
 
-def simulate_nonlinear_sem(B, n, sem_type, noise_scale=None):
+def simulate_nonlinear_sem(
+        B, n, sem_type, noise_scale=None,
+        return_weighted_adjacency=False):
     """Simulate samples from nonlinear SEM.
 
     Args:
@@ -305,16 +309,20 @@ def simulate_nonlinear_sem(B, n, sem_type, noise_scale=None):
         n (int): num of samples
         sem_type (str): mlp, mim, gp, gp-add
         noise_scale (np.ndarray): scale parameter of additive noise, default all ones
+        return_weighted_adjacency (bool): return the coefficient-group norm
+            associated with each edge in addition to the simulated data
 
     Returns:
         X (np.ndarray): [n, d] sample matrix
+        W_true (np.ndarray, optional): [d, d] matrix of edge-strength
+            group norms. Returned only when return_weighted_adjacency=True.
     """
     def _simulate_single_equation(X, scale):
         """X: [n, num of parents], x: [n]"""
         z = np.random.normal(scale=scale, size=n)
         pa_size = X.shape[1]
         if pa_size == 0:
-            return z
+            return z, np.empty(0, dtype=float)
         if sem_type == 'mlp':
             hidden = 100
             W1 = np.random.uniform(low=0.5, high=2.0, size=[pa_size, hidden])
@@ -322,6 +330,7 @@ def simulate_nonlinear_sem(B, n, sem_type, noise_scale=None):
             W2 = np.random.uniform(low=0.5, high=2.0, size=hidden)
             W2[np.random.rand(hidden) < 0.5] *= -1
             x = sigmoid(X @ W1) @ W2 + z
+            edge_strengths = np.sqrt(np.sum(W1 * W1, axis=1))
         elif sem_type == 'mim':
             w1 = np.random.uniform(low=0.5, high=2.0, size=pa_size)
             w1[np.random.rand(pa_size) < 0.5] *= -1
@@ -330,18 +339,21 @@ def simulate_nonlinear_sem(B, n, sem_type, noise_scale=None):
             w3 = np.random.uniform(low=0.5, high=2.0, size=pa_size)
             w3[np.random.rand(pa_size) < 0.5] *= -1
             x = np.tanh(X @ w1) + np.cos(X @ w2) + np.sin(X @ w3) + z
+            edge_strengths = np.sqrt(w1 * w1 + w2 * w2 + w3 * w3)
         elif sem_type == 'gp':
             from sklearn.gaussian_process import GaussianProcessRegressor
             gp = GaussianProcessRegressor()
             x = gp.sample_y(X, random_state=None).flatten() + z
+            edge_strengths = np.ones(pa_size, dtype=float)
         elif sem_type == 'gp-add':
             from sklearn.gaussian_process import GaussianProcessRegressor
             gp = GaussianProcessRegressor()
             x = sum([gp.sample_y(X[:, i, None], random_state=None).flatten()
                      for i in range(X.shape[1])]) + z
+            edge_strengths = np.ones(pa_size, dtype=float)
         else:
             raise ValueError('unknown sem type')
-        return x
+        return x, edge_strengths
 
     d = B.shape[0]
     if noise_scale is None:
@@ -353,12 +365,18 @@ def simulate_nonlinear_sem(B, n, sem_type, noise_scale=None):
             raise ValueError('noise scale must be a scalar or has length d')
         scale_vec = noise_scale
     X = np.zeros([n, d])
+    W_true = np.zeros((d, d), dtype=float)
     G = ig.Graph.Adjacency(B.tolist())
     ordered_vertices = G.topological_sorting()
     assert len(ordered_vertices) == d
     for j in ordered_vertices:
         parents = G.neighbors(j, mode=ig.IN)
-        X[:, j] = _simulate_single_equation(X[:, parents], scale_vec[j])
+        X[:, j], edge_strengths = _simulate_single_equation(
+            X[:, parents], scale_vec[j]
+        )
+        W_true[parents, j] = edge_strengths
+    if return_weighted_adjacency:
+        return X, W_true
     return X
 
 

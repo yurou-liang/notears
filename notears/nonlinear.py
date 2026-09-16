@@ -162,8 +162,21 @@ def squared_loss(output, target):
     loss = 0.5 / n * torch.sum((output - target) ** 2)
     return loss
 
+def likelihood_loss(output, target):
+    """likelihood loss for tensors with shape [n, d]."""
 
-def dual_ascent_step(model, X, lambda1, lambda2, rho, alpha, h, rho_max):
+    residual_mean = torch.mean(
+        (target - output) ** 2,
+        dim=0,
+    )
+    residual_mean = residual_mean.clamp_min(
+        torch.finfo(residual_mean.dtype).tiny
+    )
+
+    return 0.5 * torch.sum(torch.log(residual_mean))
+
+
+def dual_ascent_step(model, X, lambda1, lambda2, rho, alpha, h, rho_max, loss_type):
     """Perform one step of dual ascent in augmented Lagrangian."""
     h_new = None
     optimizer = LBFGSBScipy(model.parameters())
@@ -172,7 +185,12 @@ def dual_ascent_step(model, X, lambda1, lambda2, rho, alpha, h, rho_max):
         def closure():
             optimizer.zero_grad()
             X_hat = model(X_torch)
-            loss = squared_loss(X_hat, X_torch)
+            if loss_type == "likelihood":
+                loss = likelihood_loss(X_hat, X_torch)
+            elif loss_type == "l2":
+                loss = squared_loss(X_hat, X_torch)
+            else:
+                raise ValueError(f"Unknown loss type: {loss_type}")
             h_val = model.h_func()
             penalty = 0.5 * rho * h_val * h_val + alpha * h_val
             l2_reg = 0.5 * lambda2 * model.l2_reg()
@@ -193,8 +211,9 @@ def dual_ascent_step(model, X, lambda1, lambda2, rho, alpha, h, rho_max):
 
 def notears_nonlinear(model: nn.Module,
                       X: np.ndarray,
-                      lambda1: float = 0.,
-                      lambda2: float = 0.,
+                      loss_type: str = "likelihood",
+                      lambda1: float = 0.01,
+                      lambda2: float = 0.01,
                       max_iter: int = 100,
                       h_tol: float = 1e-8,
                       rho_max: float = 1e+16,
@@ -202,7 +221,7 @@ def notears_nonlinear(model: nn.Module,
     rho, alpha, h = 1.0, 0.0, np.inf
     for _ in range(max_iter):
         rho, alpha, h = dual_ascent_step(model, X, lambda1, lambda2,
-                                         rho, alpha, h, rho_max)
+                                         rho, alpha, h, rho_max, loss_type)
         if h <= h_tol or rho >= rho_max:
             break
     W_est = model.fc1_to_adj()

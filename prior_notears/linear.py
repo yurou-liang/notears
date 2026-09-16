@@ -787,7 +787,7 @@ if __name__ == '__main__':
 
     parser.add_argument('-s', '--seed', dest='s',  default=42, type=int)
     parser.add_argument('-d', '--num_nodes', dest='d', default=4, type=int)
-    parser.add_argument('-e', '--num_edges', dest='e', default=1, type=int)
+    parser.add_argument('-e', '--num_edges_per_node', dest='e', default=1, type=int)
     parser.add_argument('-g', '--graph_type', dest='g', default="ER", type=str)
     parser.add_argument('-l', '--loss_type', dest='l', default="both", type=str)
     parser.add_argument('-n', '--noise', dest='n', default="gauss", type=str)
