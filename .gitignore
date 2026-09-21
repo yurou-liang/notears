@@ -106,3 +106,4 @@ venv.bak/
 # result folders
 linear_*/
 nonlinear_*/
+grid_search/

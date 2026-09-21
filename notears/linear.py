@@ -76,14 +76,29 @@ def notears_linear(X, lambda1, loss_type, max_iter=100, h_tol=1e-8, rho_max=1e+1
 
     n, d = X.shape
     w_est, rho, alpha, h = np.zeros(2 * d * d), 1.0, 0.0, np.inf  # double w_est into (w_pos, w_neg)
-    weight_bound = 10.0
+    weight_bound = 5.0
     bnds = [(0, 0) if i == j else (0, weight_bound) for _ in range(2) for i in range(d) for j in range(d)]
+    
     if loss_type in ('l2', 'likelihood'):
         X = X - np.mean(X, axis=0, keepdims=True)
     for _ in range(max_iter):
         w_new, h_new = None, None
         while rho < rho_max:
             sol = sopt.minimize(_func, w_est, method='L-BFGS-B', jac=True, bounds=bnds)
+
+            if not sol.success:
+                print("L-BFGS-B warning:", sol.message)
+
+            if not np.isfinite(sol.fun):
+                raise FloatingPointError(
+                    "The augmented objective became non-finite"
+                )
+
+            if not np.all(np.isfinite(sol.x)):
+                raise FloatingPointError(
+                    "The optimizer returned non-finite weights"
+                )
+            print("rho:", rho)
             w_new = sol.x
             h_new, _ = _h(_adj(w_new))
             if h_new > 0.25 * h:

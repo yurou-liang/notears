@@ -734,7 +734,7 @@ def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, vi
     beta = np.zeros(inequality_len, dtype=float)
     l2_violation = np.inf
 
-    weight_bound = 10.0
+    weight_bound = 5.0
     bnds = [(0, 0) if i == j else (0, weight_bound) for _ in range(2) for i in range(d) for j in range(d)]
 
     if loss_type in ('l2', 'likelihood'):
@@ -742,10 +742,15 @@ def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, vi
     for _ in range(max_iter):
         w_new, c_e_new, c_i_new = None, None, None
         while rho < rho_max:
-            sol = sopt.minimize(_func, w_est, method='L-BFGS-B', jac=True, bounds=bnds)
+            # Large constraint penalties can require more line-search trials.
+            sol = sopt.minimize(
+                _func, w_est, method='L-BFGS-B', jac=True, bounds=bnds,
+                options={"maxls": 100},
+            )
 
             if not sol.success:
                 print("L-BFGS-B warning:", sol.message)
+                print("rho:", rho)
 
             if not np.isfinite(sol.fun):
                 raise FloatingPointError(
@@ -775,6 +780,7 @@ def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, vi
         alpha += rho * c_e_new
         beta = np.maximum(beta + rho * c_i_new, 0.0)
         if max_violation_new <= violation_tol or rho >= rho_max:
+            print("largest rho:", rho)
             break
     W_est = _adj(w_est)
     W_est[np.abs(W_est) < w_threshold] = 0
