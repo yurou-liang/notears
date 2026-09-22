@@ -84,7 +84,7 @@ def notears_linear(X, lambda1, loss_type, max_iter=100, h_tol=1e-8, rho_max=1e+1
     for _ in range(max_iter):
         w_new, h_new = None, None
         while rho < rho_max:
-            sol = sopt.minimize(_func, w_est, method='L-BFGS-B', jac=True, bounds=bnds)
+            sol = sopt.minimize(_func, w_est, method='L-BFGS-B', jac=True, bounds=bnds, options={"maxls": 100})
 
             if not sol.success:
                 print("L-BFGS-B warning:", sol.message)
@@ -98,7 +98,6 @@ def notears_linear(X, lambda1, loss_type, max_iter=100, h_tol=1e-8, rho_max=1e+1
                 raise FloatingPointError(
                     "The optimizer returned non-finite weights"
                 )
-            print("rho:", rho)
             w_new = sol.x
             h_new, _ = _h(_adj(w_new))
             if h_new > 0.25 * h:
@@ -108,6 +107,8 @@ def notears_linear(X, lambda1, loss_type, max_iter=100, h_tol=1e-8, rho_max=1e+1
         w_est, h = w_new, h_new
         alpha += rho * h
         if h <= h_tol or rho >= rho_max:
+            print("final rho:", rho)
+            print("final h:", h)
             break
     W_est = _adj(w_est)
     W_est[np.abs(W_est) < w_threshold] = 0

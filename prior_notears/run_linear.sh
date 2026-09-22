@@ -34,7 +34,8 @@ wait_for_batch() {
     fi
 }
 
-NODE_COUNTS=(10)
+NODE_COUNTS=(100)
+EPSILONS=(0.1)
 NOISE_TYPES=(gauss)
 LOSS_TYPE=(both)
 PRIOR_TYPES=(
@@ -55,7 +56,7 @@ GRAPH_SETTINGS=(
     # "SF:4"
 )
 # Decimal spelling matches the float values in Python output filenames.
-EPSILONS=(0.1 0.01 0.001 0.0001)
+# EPSILONS=(0.1 0.01 0.001 0.0001)
 cd "${PROJECT_ROOT}"
 
 for seed in {0..9}; do
