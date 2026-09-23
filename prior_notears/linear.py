@@ -729,7 +729,7 @@ def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, vi
         return l2_violation_i, max_violation_i, l2_violation_e, max_violation_e
 
     n, d = X.shape
-    w_est = np.zeros(2 * d * d)  # double w_est into (w_pos, w_neg)
+    w_est = np.random.uniform(0.0, 0.1, size=2 * d * d)  # double w_est into (w_pos, w_neg)
     rho_e, rho_i = 1.0, 1.0
     equality_len = 1 + sum(
     bool(pairs)
@@ -749,13 +749,23 @@ def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, vi
 
     if loss_type in ('l2', 'likelihood'):
         X = X - np.mean(X, axis=0, keepdims=True)
-    for _ in range(max_iter):
+    lower_bounds = np.asarray([bound[0] for bound in bnds], dtype=float)
+    upper_bounds = np.asarray([bound[1] for bound in bnds], dtype=float)
+    for outer_iter in range(max_iter):
         w_new, c_e_new, c_i_new = None, None, None
         penalty_limit = False
+        inner_attempt = 0
         while True:
+            inner_attempt += 1
+            i, j = exist_edge_pairs[41]
+    
+            def trace_edge(w):
+                print(f"edge ({i}, {j}): {_adj(w)[i, j]:.16e}", flush=True)
+    
+            trace_edge(w_est) 
             # Large constraint penalties can require more line-search trials.
             sol = sopt.minimize(
-                _func, w_est, method='L-BFGS-B', jac=True, bounds=bnds,
+                _func, w_est, method='L-BFGS-B', jac=True, bounds=bnds, callback=trace_edge,
                 options={"maxls": 100},
             )
 
@@ -773,6 +783,28 @@ def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, vi
                     "The optimizer returned non-finite weights"
                 )
             
+            # Bound-projected gradient mapping for the doubled variables.
+            # A raw gradient can be nonzero at a valid bound-constrained optimum.
+            projected_gradient = sol.x - np.clip(
+                sol.x - sol.jac, lower_bounds, upper_bounds
+            )
+            diagnostics = {
+                "outer_iter": outer_iter + 1,
+                "inner_attempt": inner_attempt,
+                "success": bool(sol.success),
+                "status": int(sol.status),
+                "message": str(sol.message),
+                "nit": int(sol.nit),
+                "nfev": int(sol.nfev),
+                "objective": float(sol.fun),
+                "projected_gradient_inf": float(np.max(np.abs(projected_gradient))),
+                "weight_change_inf": float(np.max(np.abs(_adj(sol.x) - _adj(w_est)))),
+                "rho_e": float(rho_e),
+                "rho_i": float(rho_i),
+                "alpha_inf": float(np.max(np.abs(alpha))) if alpha.size else 0.0,
+                "beta_inf": float(np.max(np.abs(beta))) if beta.size else 0.0,
+            }
+            print("inner_solver:", json.dumps(diagnostics), flush=True)
             w_new = sol.x
             c_e_new, _ = combined_equality_constraints(_adj(w_new))
             i_value_new, _ = combined_inequality_constraints(_adj(w_new))
@@ -810,7 +842,7 @@ def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, vi
             break
         if penalty_limit:
             print(
-                "No further penalty increase; continuing with multiplier updates.",
+                "No further penalty increase.",
                 "rho_i:", rho_i, "rho_e:", rho_e,
             )
 
@@ -846,7 +878,7 @@ if __name__ == '__main__':
     B_true = utils.simulate_dag(d, s0, graph_type)
     print("B_true:", B_true)
     W_true = utils.simulate_parameter(B_true)
-    filename = f"linear_{args.p}_{graph_type}{args.e}_d{d}_{sem_type}_rate{args.r}_epsilon{args.ep}_seed{args.s}_differentpenalty2.json"
+    filename = f"linear_{args.p}_{graph_type}{args.e}_d{d}_{sem_type}_rate{args.r}_epsilon{args.ep}_seed{args.s}_differentpenalty2_new.json"
 
     noise_scale = np.exp(np.random.uniform(np.log(0.5), np.log(2.0), size=d,))
     X = utils.simulate_linear_sem(W_true, n, sem_type, noise_scale)
