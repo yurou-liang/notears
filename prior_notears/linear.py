@@ -809,8 +809,10 @@ def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, vi
             print("Constraint tolerance reached. rho_i:", rho_i, "rho_e:", rho_e)
             break
         if penalty_limit:
-            print("Penalty limit reached without feasibility. rho_i:", rho_i, "rho_e:", rho_e)
-            break
+            print(
+                "No further penalty increase; continuing with multiplier updates.",
+                "rho_i:", rho_i, "rho_e:", rho_e,
+            )
 
         # These are the penalties used in the accepted inner solve.
         alpha += rho_e * c_e_new
@@ -844,7 +846,7 @@ if __name__ == '__main__':
     B_true = utils.simulate_dag(d, s0, graph_type)
     print("B_true:", B_true)
     W_true = utils.simulate_parameter(B_true)
-    filename = f"linear_{args.p}_{graph_type}{args.e}_d{d}_{sem_type}_rate{args.r}_epsilon{args.ep}_seed{args.s}_differentpenalty.json"
+    filename = f"linear_{args.p}_{graph_type}{args.e}_d{d}_{sem_type}_rate{args.r}_epsilon{args.ep}_seed{args.s}_differentpenalty2.json"
 
     noise_scale = np.exp(np.random.uniform(np.log(0.5), np.log(2.0), size=d,))
     X = utils.simulate_linear_sem(W_true, n, sem_type, noise_scale)

@@ -72,7 +72,7 @@ for seed in {0..9}; do
 
                         output_dir="${PROJECT_ROOT}/linear_${prior_type}"
                         log_dir="${output_dir}/log"
-                        result_stem="linear_${prior_type}_${graph_type}${edge_factor}_d${d}_${noise_type}_rate${PRIOR_RATE}_epsilon${epsilon}_seed${seed}"
+                        result_stem="linear_${prior_type}_${graph_type}${edge_factor}_d${d}_${noise_type}_rate${PRIOR_RATE}_epsilon${epsilon}_seed${seed}_differentpenalty2"
                         result_file="${output_dir}/${result_stem}.json"
                         log_file="${log_dir}/${result_stem}.log"
                         mkdir -p "${output_dir}" "${log_dir}"
