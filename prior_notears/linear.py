@@ -677,12 +677,12 @@ def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, vi
         i_value, i_grad = combined_inequality_constraints(W)
         c_i = epsilon - i_value  
         G_i = -i_grad
-        z = beta + rho * c_i
+        z = beta + rho_i * c_i
         # value = softplus(z, sharpness)
         # dvalue_dz = sigmoid(sharpness * z)
         positive_part = np.maximum(z, 0.0)
-        obj = loss + 0.5 * rho * np.sum(c_e**2) + alpha @ c_e + ( 1 / (2 * rho) ) * (np.sum(positive_part**2) - np.sum(beta**2)) + lambda1 * w.sum()
-        G_smooth = G_loss.reshape(-1) + G_e.T @ (alpha + rho * c_e) + G_i.T @ positive_part
+        obj = loss + 0.5 * rho_e * np.sum(c_e**2) + alpha @ c_e + ( 1 / (2 * rho_i) ) * (np.sum(positive_part**2) - np.sum(beta**2)) + lambda1 * w.sum()
+        G_smooth = G_loss.reshape(-1) + G_e.T @ (alpha + rho_e * c_e) + G_i.T @ positive_part
         g_obj = np.concatenate((G_smooth + lambda1, - G_smooth + lambda1), axis=None)
         return obj, g_obj
 
@@ -702,26 +702,35 @@ def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, vi
     def _violation(c_e, c_i):
         active_i = np.maximum(c_i, 0.0)
 
-        all_violations = np.concatenate([
-            np.asarray(c_e).reshape(-1),
-            active_i.reshape(-1),
-        ])
+        # all_violations = np.concatenate([
+        #     np.asarray(c_e).reshape(-1),
+        #     active_i.reshape(-1),
+        # ])
 
-        l2_violation = np.linalg.norm(
-            all_violations,
+        l2_violation_i = np.linalg.norm(
+            active_i,
             ord=2,
         )
 
-        max_violation = np.linalg.norm(
-            all_violations,
+        l2_violation_e = np.linalg.norm(
+            c_e,
+            ord=2,
+        )
+
+        max_violation_i = (
+            np.linalg.norm(active_i, ord=np.inf) if active_i.size else 0.0
+        )
+
+        max_violation_e = np.linalg.norm(
+            c_e,
             ord=np.inf,
         )
 
-        return l2_violation, max_violation
-    
+        return l2_violation_i, max_violation_i, l2_violation_e, max_violation_e
+
     n, d = X.shape
     w_est = np.zeros(2 * d * d)  # double w_est into (w_pos, w_neg)
-    rho = 1.0
+    rho_e, rho_i = 1.0, 1.0
     equality_len = 1 + sum(
     bool(pairs)
     for pairs in (
@@ -733,7 +742,7 @@ def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, vi
     inequality_len = len(exist_edge_pairs) + len(exist_path_pairs) + len(exist_trek_pairs)
     alpha = np.zeros(equality_len, dtype=float)
     beta = np.zeros(inequality_len, dtype=float)
-    l2_violation = np.inf
+    l2_violation_i, l2_violation_e = np.inf, np.inf
 
     weight_bound = 5.0
     bnds = [(0, 0) if i == j else (0, weight_bound) for _ in range(2) for i in range(d) for j in range(d)]
@@ -742,7 +751,8 @@ def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, vi
         X = X - np.mean(X, axis=0, keepdims=True)
     for _ in range(max_iter):
         w_new, c_e_new, c_i_new = None, None, None
-        while rho < rho_max:
+        penalty_limit = False
+        while True:
             # Large constraint penalties can require more line-search trials.
             sol = sopt.minimize(
                 _func, w_est, method='L-BFGS-B', jac=True, bounds=bnds,
@@ -751,7 +761,7 @@ def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, vi
 
             if not sol.success:
                 print("L-BFGS-B warning:", sol.message)
-                print("rho:", rho)
+                print("rho_i:", rho_i, "rho_e:", rho_e)
 
             if not np.isfinite(sol.fun):
                 raise FloatingPointError(
@@ -772,17 +782,41 @@ def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, vi
             print("inequality constraints:", c_i_new)
             ###############################
             # violation_new = _violation(c_e_new, c_i_new)
-            l2_violation_new, max_violation_new = _violation(c_e_new, c_i_new,)
-            if l2_violation_new > 0.25 * l2_violation:
-                rho *= 10
-            else:
+            l2_violation_i_new, max_violation_i_new, l2_violation_e_new, max_violation_e_new = _violation(c_e_new, c_i_new,)
+            increase_i = (
+                max_violation_i_new > violation_tol
+                and l2_violation_i_new > 0.25 * l2_violation_i
+            )
+            increase_e = (
+                max_violation_e_new > violation_tol
+                and l2_violation_e_new > 0.25 * l2_violation_e
+            )
+
+            if not (increase_i or increase_e):
                 break
-        w_est, l2_violation = w_new, l2_violation_new
-        alpha += rho * c_e_new
-        beta = np.maximum(beta + rho * c_i_new, 0.0)
-        if max_violation_new <= violation_tol or rho >= rho_max:
-            print("largest rho:", rho)
+
+            next_rho_i = min(10 * rho_i, rho_max) if increase_i else rho_i
+            next_rho_e = min(10 * rho_e, rho_max) if increase_e else rho_e
+            if next_rho_i == rho_i and next_rho_e == rho_e:
+                penalty_limit = True
+                break
+
+            rho_i, rho_e = next_rho_i, next_rho_e
+
+        w_est, l2_violation_i, l2_violation_e = w_new, l2_violation_i_new, l2_violation_e_new
+        feasible = max(max_violation_e_new, max_violation_i_new) <= violation_tol
+        if feasible:
+            print("Constraint tolerance reached. rho_i:", rho_i, "rho_e:", rho_e)
             break
+        if penalty_limit:
+            print("Penalty limit reached without feasibility. rho_i:", rho_i, "rho_e:", rho_e)
+            break
+
+        # These are the penalties used in the accepted inner solve.
+        alpha += rho_e * c_e_new
+        beta = np.maximum(beta + rho_i * c_i_new, 0.0)
+    else:
+        print("Outer iteration limit reached without feasibility.")
     W_est = _adj(w_est)
     W_est[np.abs(W_est) < w_threshold] = 0
     return W_est, bool(sol.success)
@@ -810,7 +844,7 @@ if __name__ == '__main__':
     B_true = utils.simulate_dag(d, s0, graph_type)
     print("B_true:", B_true)
     W_true = utils.simulate_parameter(B_true)
-    filename = f"linear_{args.p}_{graph_type}{args.e}_d{d}_{sem_type}_rate{args.r}_epsilon{args.ep}_seed{args.s}.json"
+    filename = f"linear_{args.p}_{graph_type}{args.e}_d{d}_{sem_type}_rate{args.r}_epsilon{args.ep}_seed{args.s}_differentpenalty.json"
 
     noise_scale = np.exp(np.random.uniform(np.log(0.5), np.log(2.0), size=d,))
     X = utils.simulate_linear_sem(W_true, n, sem_type, noise_scale)
