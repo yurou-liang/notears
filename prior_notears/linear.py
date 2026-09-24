@@ -757,16 +757,9 @@ def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, vi
         inner_attempt = 0
         while True:
             inner_attempt += 1
-            i, j = exist_edge_pairs[41]
-    
-            def trace_edge(w):
-                print(f"edge ({i}, {j}): {_adj(w)[i, j]:.16e}", flush=True)
-    
-            trace_edge(w_est) 
-            # Large constraint penalties can require more line-search trials.
             sol = sopt.minimize(
-                _func, w_est, method='L-BFGS-B', jac=True, bounds=bnds, callback=trace_edge,
-                options={"maxls": 100},
+                _func, w_est, method='L-BFGS-B', jac=True, bounds=bnds,
+                options={"maxls": 100, "ftol": 1e-15},
             )
 
             if not sol.success:

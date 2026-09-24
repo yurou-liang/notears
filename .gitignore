@@ -107,3 +107,6 @@ venv.bak/
 linear_*/
 nonlinear_*/
 grid_search/
+
+# Pyfiles
+linear_single.py

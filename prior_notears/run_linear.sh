@@ -5,7 +5,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 PYTHON_BIN="${PYTHON_BIN:-/home/liay/linux/miniconda3/envs/notears/bin/python}"
-PRIOR_RATE="${PRIOR_RATE:-0.5}"
+# PRIOR_RATE="${PRIOR_RATE:-0.5}"
 MAX_JOBS="${MAX_JOBS:-4}"
 
 if [[ ! "${MAX_JOBS}" =~ ^[1-9][0-9]*$ ]]; then
@@ -46,7 +46,7 @@ PRIOR_TYPES=(
     # exist_path_pairs
     # exist_trek_pairs
 )
-
+PRIOR_RATE=0.5
 # Each entry is "graph_type:edge_factor". linear.py calculates s0 as d times
 # edge_factor, giving the ER1, ER2, ER4, and SF4 regimes.
 GRAPH_SETTINGS=(
@@ -59,7 +59,7 @@ GRAPH_SETTINGS=(
 # EPSILONS=(0.1 0.01 0.001 0.0001)
 cd "${PROJECT_ROOT}"
 
-for seed in 5; do
+for seed in {0..9}; do
     for d in "${NODE_COUNTS[@]}"; do
         for graph_setting in "${GRAPH_SETTINGS[@]}"; do
             graph_type="${graph_setting%%:*}"
@@ -72,13 +72,13 @@ for seed in 5; do
 
                         output_dir="${PROJECT_ROOT}/linear_${prior_type}"
                         log_dir="${output_dir}/log"
-                        result_stem="linear_${prior_type}_${graph_type}${edge_factor}_d${d}_${noise_type}_rate${PRIOR_RATE}_epsilon${epsilon}_seed${seed}_differentpenalty2_new"
+                        result_stem="linear_${prior_type}_${graph_type}${edge_factor}_d${d}_${noise_type}_rate${PRIOR_RATE}_epsilon${epsilon}_seed${seed}_singlepenalty"
                         result_file="${output_dir}/${result_stem}.json"
                         log_file="${log_dir}/${result_stem}.log"
                         mkdir -p "${output_dir}" "${log_dir}"
 
                         (
-                            "${PYTHON_BIN}" -m prior_notears.linear \
+                            "${PYTHON_BIN}" -m prior_notears.linear_single \
                                 --seed "${seed}" \
                                 --num_nodes "${d}" \
                                 --num_edges_per_node "${edge_factor}" \
