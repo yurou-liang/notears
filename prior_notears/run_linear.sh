@@ -34,7 +34,7 @@ wait_for_batch() {
     fi
 }
 
-NODE_COUNTS=(100)
+NODE_COUNTS=(10)
 EPSILONS=(0.1)
 NOISE_TYPES=(gauss)
 LOSS_TYPE=(both)
@@ -60,6 +60,7 @@ GRAPH_SETTINGS=(
 cd "${PROJECT_ROOT}"
 
 for seed in {0..9}; do
+# for seed in 0; do
     for d in "${NODE_COUNTS[@]}"; do
         for graph_setting in "${GRAPH_SETTINGS[@]}"; do
             graph_type="${graph_setting%%:*}"
@@ -72,13 +73,13 @@ for seed in {0..9}; do
 
                         output_dir="${PROJECT_ROOT}/linear_${prior_type}"
                         log_dir="${output_dir}/log"
-                        result_stem="linear_${prior_type}_${graph_type}${edge_factor}_d${d}_${noise_type}_rate${PRIOR_RATE}_epsilon${epsilon}_seed${seed}_singlepenalty"
+                        result_stem="linear_${prior_type}_${graph_type}${edge_factor}_d${d}_${noise_type}_rate${PRIOR_RATE}_epsilon${epsilon}_seed${seed}_twopenalty"
                         result_file="${output_dir}/${result_stem}.json"
                         log_file="${log_dir}/${result_stem}.log"
                         mkdir -p "${output_dir}" "${log_dir}"
 
                         (
-                            "${PYTHON_BIN}" -m prior_notears.linear_single \
+                            "${PYTHON_BIN}" -m prior_notears.linear \
                                 --seed "${seed}" \
                                 --num_nodes "${d}" \
                                 --num_edges_per_node "${edge_factor}" \

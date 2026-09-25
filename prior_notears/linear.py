@@ -108,6 +108,25 @@ def _exist_paths(W, w_thres, path_pairs, sharpness=10.0):
 
     return residuals, J
 
+# def _exist_paths(W, w_thres, path_pairs):
+#     p = np.maximum(W * W - w_thres * w_thres, 0.0)
+#     denominator = 1.0 + p * p
+
+#     A = p * p / denominator
+#     dA_dW = 4.0 * W * p / denominator**2
+#     E = slin.expm(A)
+
+#     values = np.array([E[i, j] for i, j in path_pairs])
+#     J = np.zeros((len(path_pairs), W.size), dtype=float)
+
+#     for k, (i, j) in enumerate(path_pairs):
+#         M = np.zeros_like(W, dtype=float)
+#         M[i, j] = 1.0
+#         grad_A = slin.expm_frechet(A.T, M, compute_expm=False)
+#         J[k, :] = (dA_dW * grad_A).reshape(-1)
+
+#     return values, J
+
 def _forbid_trek(W, trek_pairs):
     """Return the mean forbidden-trek penalty and its gradient."""
     E = slin.expm(W * W)
@@ -333,7 +352,7 @@ def loss(W, X):
     return loss, G_loss.ravel()
 ####just for test, to delete later #######################################
 
-def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, violation_tol=1e-8, rho_max=1e+16, w_threshold=0.3, sharpness=10.0, epsilon=1e-1):
+def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, violation_tol=1e-8, rho_max=1e+16, w_threshold=0.3, sharpness=50.0, epsilon=1e-1):
     """Solve min_W L(W; X) + lambda1 ‖W‖_1 s.t. h(W) = 0 using augmented Lagrangian.
 
     Args:
@@ -493,30 +512,48 @@ def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, vi
             J[k, :] = (dX_dW * dA_dX * grad_A).reshape(-1)
 
         return residuals, J
+    # def _exist_paths(W, w_thres, path_pairs):
+    #     p = np.maximum(W * W - w_thres * w_thres, 0.0)
+    #     denominator = 1.0 + p * p
+
+    #     A = p * p / denominator
+    #     dA_dW = 4.0 * W * p / denominator**2
+    #     E = slin.expm(A)
+
+    #     values = np.array([E[i, j] for i, j in path_pairs])
+    #     J = np.zeros((len(path_pairs), W.size), dtype=float)
+
+    #     for k, (i, j) in enumerate(path_pairs):
+    #         M = np.zeros_like(W, dtype=float)
+    #         M[i, j] = 1.0
+    #         grad_A = slin.expm_frechet(A.T, M, compute_expm=False)
+    #         J[k, :] = (dA_dW * grad_A).reshape(-1)
+
+    #     return values, J
     
-    def _forbid_trek(W, trek_pairs):
-        """Return the mean forbidden-trek penalty and its gradient."""
-        E = slin.expm(W * W)
-        scale = len(trek_pairs)
+    # def _forbid_trek(W, trek_pairs):
+    #     """Return the mean forbidden-trek penalty and its gradient."""
+    #     E = slin.expm(W * W)
+    #     scale = len(trek_pairs)
 
-        M = np.zeros_like(W, dtype=np.result_type(W, np.float64))
-        for i, j in trek_pairs:
-            M[i, j] += 1.0
+    #     M = np.zeros_like(W, dtype=np.result_type(W, np.float64))
+    #     for i, j in trek_pairs:
+    #         M[i, j] += 1.0
 
-        value = np.sum(M * (E.T @ E)) / scale
+    #     value = np.sum(M * (E.T @ E)) / scale
 
-        # Gradient with respect to E.
-        grad_E = E @ (M + M.T) / scale
+    #     # Gradient with respect to E.
+    #     grad_E = E @ (M + M.T) / scale
 
-        # Adjoint of the matrix-exponential derivative.
-        grad_A = slin.expm_frechet(
-            (W * W).T,
-            grad_E,
-            compute_expm=False,
-        )
+    #     # Adjoint of the matrix-exponential derivative.
+    #     grad_A = slin.expm_frechet(
+    #         (W * W).T,
+    #         grad_E,
+    #         compute_expm=False,
+    #     )
 
-        grad_W = 2.0 * W * grad_A
-        return value, grad_W.reshape(-1)
+    #     grad_W = 2.0 * W * grad_A
+    #     return value, grad_W.reshape(-1)
     
     def _exist_trek(W, w_thres, trek_pairs):
 
@@ -729,7 +766,8 @@ def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, vi
         return l2_violation_i, max_violation_i, l2_violation_e, max_violation_e
 
     n, d = X.shape
-    w_est = np.random.uniform(0.0, 0.1, size=2 * d * d)  # double w_est into (w_pos, w_neg)
+    # w_est = np.random.uniform(0.0, 0.1, size=2 * d * d)  # double w_est into (w_pos, w_neg)
+    w_est = np.zeros(2 * d * d)
     rho_e, rho_i = 1.0, 1.0
     equality_len = 1 + sum(
     bool(pairs)
@@ -871,7 +909,7 @@ if __name__ == '__main__':
     B_true = utils.simulate_dag(d, s0, graph_type)
     print("B_true:", B_true)
     W_true = utils.simulate_parameter(B_true)
-    filename = f"linear_{args.p}_{graph_type}{args.e}_d{d}_{sem_type}_rate{args.r}_epsilon{args.ep}_seed{args.s}_differentpenalty2_new.json"
+    filename = f"linear_{args.p}_{graph_type}{args.e}_d{d}_{sem_type}_rate{args.r}_epsilon{args.ep}_seed{args.s}_twopenalty.json"
 
     noise_scale = np.exp(np.random.uniform(np.log(0.5), np.log(2.0), size=d,))
     X = utils.simulate_linear_sem(W_true, n, sem_type, noise_scale)
@@ -1029,25 +1067,27 @@ if __name__ == '__main__':
 #### check gradient of prior knowledge constraints
 # if __name__ == '__main__':
 
-    # rng = np.random.default_rng(42)
-    # n, d = 100, 4
-    # X = rng.normal(size=(n, d))
+    # d = 4
+    # # Keep test weights away from |W| == w_threshold, where max has a kink.
     # W = np.array([
-    #     [0.0, 2.0, 0.3, 0.8],
+    #     [0.0, 2.0, 0.35, 0.8],
     #     [0.2, 0.0, 0.5, 1.0],
-    #     [0.3, 0.4, 0.0, 0.7],
-    #     [0.4, 0.3, 0.2, 0.0],
+    #     [0.35, 0.4, 0.0, 0.7],
+    #     [0.4, 0.35, 0.2, 0.0],
     # ], dtype=float)
-
+    # edge_pairs = [(0, 1), (1, 2), (2, 3)]
+    # path_pairs = [(0, 1), (1, 2), (2, 3)]
+    # trek_pairs = [(0, 1)]
+    # w_threshold = 0.3
     # def objective(w):
     #     W_matrix = w.reshape(d, d)
-    #     value, _ = loss(W_matrix, X)
+    #     value, _ = _exist_paths(W_matrix, w_threshold, path_pairs)
     #     return value
 
 
     # def gradient(w):
     #     W_matrix = w.reshape(d, d)
-    #     _, grad = loss(W_matrix, X)
+    #     _, grad = _exist_paths(W_matrix, w_threshold, path_pairs)
     #     return grad
 
 

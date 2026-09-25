@@ -84,7 +84,7 @@ def notears_linear(X, lambda1, loss_type, max_iter=100, h_tol=1e-8, rho_max=1e+1
     for _ in range(max_iter):
         w_new, h_new = None, None
         while rho < rho_max:
-            sol = sopt.minimize(_func, w_est, method='L-BFGS-B', jac=True, bounds=bnds, options={"maxls": 100})
+            sol = sopt.minimize(_func, w_est, method='L-BFGS-B', jac=True, bounds=bnds, options={"maxls": 100, "ftol": 1e-15})
 
             if not sol.success:
                 print("L-BFGS-B warning:", sol.message)
