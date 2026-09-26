@@ -34,15 +34,15 @@ wait_for_batch() {
     fi
 }
 
-NODE_COUNTS=(10)
-EPSILONS=(0.1)
+NODE_COUNTS=(20)
+EPSILONS=(0.01)
 NOISE_TYPES=(gauss)
 LOSS_TYPE=(both)
 PRIOR_TYPES=(
     # forbid_edge_pairs
     # forbid_path_pairs
-    # forbid_trek_pairs
-    exist_edge_pairs
+    forbid_trek_pairs
+    # exist_edge_pairs
     # exist_path_pairs
     # exist_trek_pairs
 )
