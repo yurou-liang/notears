@@ -13,7 +13,7 @@ from Varsortability.src.varsortability import varsortability
 import time
 import traceback
 
-def softplus(x, sharpness=10.0):
+def softplus(x, sharpness=50.0):
     return np.logaddexp(0.0, sharpness * x) / sharpness
 
 ####just for test, to delete later #######################################
@@ -89,7 +89,7 @@ def _forbid_paths(W, path_pairs):
     grad_W = 2.0 * W * grad_A
     return value, grad_W.reshape(-1)
 
-def _exist_paths(W, w_thres, path_pairs, sharpness=10.0):
+def _exist_paths(W, w_thres, path_pairs, sharpness=50.0):
     X = W * W - w_thres * w_thres
     A = softplus(X, sharpness)
     E = slin.expm(A)
@@ -151,7 +151,7 @@ def _forbid_trek(W, trek_pairs):
     grad_W = 2.0 * W * grad_A
     return value, grad_W.reshape(-1)
 
-def _exist_trek(W, w_thres, trek_pairs, sharpness=10.0):
+def _exist_trek(W, w_thres, trek_pairs, sharpness=50.0):
 
     """Return trek residuals and their Jacobian.
 
