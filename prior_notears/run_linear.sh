@@ -19,32 +19,35 @@ export OPENBLAS_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 
 pids=()
+failed_jobs=0
 wait_for_batch() {
     local pid
     local failed=0
     for pid in "${pids[@]}"; do
         if ! wait "${pid}"; then
-            failed=1
+            failed=$((failed + 1))
         fi
     done
     pids=()
     if (( failed )); then
-        echo "One or more experiments failed; check the logs." >&2
-        return 1
+        failed_jobs=$((failed_jobs + failed))
+        echo "${failed} experiment(s) failed in this batch; continuing. Check the logs." >&2
     fi
+    return 0
 }
 
-NODE_COUNTS=(20)
-EPSILONS=(0.01)
+NODE_COUNTS=(10 20)
+EPSILONS=(0.1)
 NOISE_TYPES=(gauss)
 LOSS_TYPE=(both)
 PRIOR_TYPES=(
-    # forbid_edge_pairs
-    # forbid_path_pairs
+    forbid_edge_pairs
+    forbid_path_pairs
     forbid_trek_pairs
-    # exist_edge_pairs
-    # exist_path_pairs
-    # exist_trek_pairs
+    exist_edge_pairs
+    exist_path_pairs
+    exist_trek_pairs
+    mix
 )
 PRIOR_RATE=0.5
 # Each entry is "graph_type:edge_factor". linear.py calculates s0 as d times
@@ -108,4 +111,10 @@ for seed in {0..9}; do
 done
 
 wait_for_batch
+if (( failed_jobs )); then
+    echo "All linear experiments finished; ${failed_jobs} experiment(s) failed. Check the logs." >&2
+    exit 1
+fi
 echo "All linear experiments completed."
+
+# PYTHON_BIN="$(command -v python)" MAX_JOBS=4 bash prior_notears/run_linear.sh

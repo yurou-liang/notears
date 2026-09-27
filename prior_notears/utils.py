@@ -492,6 +492,70 @@ def count_accuracy(B_true, B_est):
     shd = len(extra_lower) + len(missing_lower) + len(reverse)
     return {'fdr': fdr, 'tpr': tpr, 'fpr': fpr, 'f1': f1, 'shd': shd, 'nnz': pred_size}
 
+def evaluate_prior_knowledge(B_est, prior_knowledge):
+    """Return (number_satisfied, percentage_satisfied).
+
+    Nonzero entries in B_est represent directed edges.
+    Path existence means directed reachability.
+    Trek existence means sharing an ancestor, including either endpoint.
+
+    Percentage is between 0 and 100; returns (0, 0.0) for empty priors.
+    """
+    import numpy as np
+
+    B_est = np.asarray(B_est)
+    if B_est.ndim != 2 or B_est.shape[0] != B_est.shape[1]:
+        raise ValueError("B_est must be a square adjacency matrix")
+
+    d = B_est.shape[0]
+    adjacency = B_est != 0
+    np.fill_diagonal(adjacency, False)
+
+    # Directed reachability.
+    reachability = adjacency.copy()
+    for k in range(d):
+        reachability |= (
+            reachability[:, [k]] & reachability[[k], :]
+        )
+    np.fill_diagonal(reachability, False)
+
+    # A trek exists iff the endpoints share an ancestor.
+    ancestors = reachability.copy()
+    np.fill_diagonal(ancestors, True)
+    trek_relation = (
+        ancestors.T.astype(np.int64) @ ancestors.astype(np.int64)
+    ) > 0
+
+    relations = {
+        "edge": adjacency,
+        "path": reachability,
+        "trek": trek_relation,
+    }
+
+    satisfied = 0
+    total = 0
+
+    for prior_type, pairs in prior_knowledge.items():
+        name = prior_type.removesuffix("_pairs")
+        valid_types = {
+            f"{action}_{kind}"
+            for action in ("exist", "forbid")
+            for kind in relations
+        }
+        if name not in valid_types:
+            raise ValueError(f"Unknown prior type: {prior_type!r}")
+
+        action, kind = name.split("_")
+        relation = relations[kind]
+        want_existing = action == "exist"
+
+        for i, j in pairs:
+            total += 1
+            satisfied += int(bool(relation[i, j]) == want_existing)
+
+    percentage = 100.0 * satisfied / total if total else 0.0
+    return satisfied, percentage
+
 if __name__ == '__main__':
     # Example DAG: 2 -> 1 -> 0 and 2 -> 3.
     B_example = np.array([
