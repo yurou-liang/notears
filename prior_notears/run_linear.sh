@@ -36,7 +36,7 @@ wait_for_batch() {
     return 0
 }
 
-NODE_COUNTS=(10 20)
+NODE_COUNTS=(30 40 50)
 EPSILONS=(0.1)
 NOISE_TYPES=(gauss)
 LOSS_TYPE=(both)
