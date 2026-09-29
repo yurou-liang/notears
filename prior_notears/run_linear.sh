@@ -36,18 +36,18 @@ wait_for_batch() {
     return 0
 }
 
-NODE_COUNTS=(30 40 50)
+NODE_COUNTS=(10 20)
 EPSILONS=(0.1)
 NOISE_TYPES=(gauss)
 LOSS_TYPE=(both)
 PRIOR_TYPES=(
-    forbid_edge_pairs
-    forbid_path_pairs
-    forbid_trek_pairs
-    exist_edge_pairs
+    # forbid_edge_pairs
+    # forbid_path_pairs
+    # forbid_trek_pairs
+    # exist_edge_pairs
     exist_path_pairs
-    exist_trek_pairs
-    mix
+    # exist_trek_pairs
+    # mix
 )
 PRIOR_RATE=0.5
 # Each entry is "graph_type:edge_factor". linear.py calculates s0 as d times
@@ -76,13 +76,13 @@ for seed in {0..9}; do
 
                         output_dir="${PROJECT_ROOT}/linear_${prior_type}"
                         log_dir="${output_dir}/log"
-                        result_stem="linear_${prior_type}_${graph_type}${edge_factor}_d${d}_${noise_type}_rate${PRIOR_RATE}_epsilon${epsilon}_seed${seed}_twopenalty"
+                        result_stem="linear_${prior_type}_${graph_type}${edge_factor}_d${d}_${noise_type}_rate${PRIOR_RATE}_epsilon${epsilon}_seed${seed}_twopenalty_compare"
                         result_file="${output_dir}/${result_stem}.json"
                         log_file="${log_dir}/${result_stem}.log"
                         mkdir -p "${output_dir}" "${log_dir}"
 
                         (
-                            "${PYTHON_BIN}" -m prior_notears.linear \
+                            "${PYTHON_BIN}" -u -m prior_notears.linear \
                                 --seed "${seed}" \
                                 --num_nodes "${d}" \
                                 --num_edges_per_node "${edge_factor}" \
@@ -92,6 +92,7 @@ for seed in {0..9}; do
                                 --prior_type "${prior_type}" \
                                 --prior_rate "${PRIOR_RATE}" \
                                 --epsilon "${epsilon}" \
+                                --compare \
                                 > "${log_file}" 2>&1
 
                             if [[ ! -f "${result_file}" ]]; then

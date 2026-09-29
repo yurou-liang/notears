@@ -201,6 +201,63 @@ def _exist_paths(W, w_thres, path_pairs, coefficient=None, sharpness=50.0):
 
     return values, grad_W.reshape(-1)
 
+def _exist_paths2(W, w_thres, path_pairs,
+                  sharpness=50.0, epsilon=10):
+    """Return the sum of masked missing-path penalties and its gradient.
+
+    p = sum_{k=1}^d abs(W)^k, using matrix powers.
+    b[i, j] is one iff no walk of length 1 through d exists in
+    the thresholded adjacency (abs(W) >= w_thres).
+    The scalar value sums b * softplus(epsilon - p) over path_pairs.
+    w_thres is epsilon_0 in the mask; epsilon is the softplus margin.
+    sharpness=1 gives ordinary softplus.
+
+    Always return (value, gradient), with gradient shaped (W.size,).
+    Empty path_pairs returns zero and a zero gradient. The hard mask has zero
+    derivative away from threshold crossings and is generally discontinuous
+    at crossings. At W == 0, use zero as the abs subgradient.
+    """
+    W = np.asarray(W, dtype=float)
+    if W.ndim != 2 or W.shape[0] != W.shape[1]:
+        raise ValueError("W must be a square matrix")
+    if len(path_pairs) == 0:
+        return 0.0, np.zeros(W.size)
+
+    d = W.shape[0]
+    A = np.abs(W)
+    powers = [np.eye(d)]
+    p = np.zeros_like(W)
+    adjacency = A >= w_thres
+    reachable = np.zeros_like(adjacency)
+    walk = np.eye(d, dtype=bool)
+    for _ in range(d):
+        powers.append(powers[-1] @ A)
+        p += powers[-1]
+        # Boolean matrix products avoid overflow from counting walks.
+        walk = walk @ adjacency
+        reachable |= walk
+
+    b = ~reachable
+    X = epsilon - p
+    penalties = b * softplus(X, sharpness)
+    scale = len(path_pairs)
+    value = float(sum(penalties[i, j] for i, j in path_pairs))/scale
+
+    grad_p = np.zeros_like(W)
+    for i, j in path_pairs:
+        grad_p[i, j] -= b[i, j] * sigmoid(sharpness * X[i, j])
+
+    # Reverse through P_k = P_{k-1} @ A and p = sum_k P_k.
+    grad_A = np.zeros_like(W)
+    grad_power = np.zeros_like(W)
+    for k in range(d, 0, -1):
+        grad_power += grad_p
+        grad_A += powers[k - 1].T @ grad_power
+        grad_power = grad_power @ A.T
+
+    return value, (grad_A * np.sign(W)).reshape(-1)/scale
+
+
 def _forbid_trek(W, trek_pairs):
     """Return the mean forbidden-trek penalty and its gradient."""
     E = slin.expm(W * W)
@@ -383,7 +440,7 @@ def combined_inequality_constraints(W, w_threshold, exist_edge_pairs, exist_path
     )
     return values, weighted_grad
 
-def evaluate_prior_values(W, prior_knowledge, w_threshold):
+def evaluate_prior_values(W, prior_knowledge, w_threshold, compare = False):
     constraint_values = {}
 
     forbid_functions = {
@@ -394,7 +451,7 @@ def evaluate_prior_values(W, prior_knowledge, w_threshold):
 
     exist_functions = {
         "exist_edge_pairs": _exist_edges,
-        "exist_path_pairs": _exist_paths,
+        "exist_path_pairs": _exist_paths if not compare else _exist_paths2,
         "exist_trek_pairs": _exist_trek,
     }
 
@@ -410,6 +467,12 @@ def evaluate_prior_values(W, prior_knowledge, w_threshold):
             # otherwise return the mean over all supplied pairs.
             values = [
                 float(constraint_function(W, [pair])[0])
+                for pair in pairs
+            ]
+
+        elif compare and prior_key == "exist_path_pairs":
+            values = [
+                _exist_paths2(W, w_threshold, [pair])[0]
                 for pair in pairs
             ]
 
@@ -446,7 +509,7 @@ def loss(W, X):
     return loss, G_loss.ravel()
 ####just for test, to delete later #######################################
 
-def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, violation_tol=1e-8, rho_max=1e+16, w_threshold=0.3, sharpness=50.0, epsilon=1e-1):
+def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, violation_tol=1e-8, rho_max=1e+16, w_threshold=0.3, sharpness=50.0, epsilon=1e-1, compare = False):
     """Solve min_W L(W; X) + lambda1 ‖W‖_1 s.t. h(W) = 0 using augmented Lagrangian.
 
     Args:
@@ -636,6 +699,62 @@ def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, vi
         grad_W = grad_A * dA_dX * (2.0 * W)
 
         return values, grad_W.reshape(-1)
+
+    def _exist_paths2(W, w_thres, path_pairs,
+                  sharpness=50.0, epsilon=10):
+        """Return the sum of masked missing-path penalties and its gradient.
+
+        p = sum_{k=1}^d abs(W)^k, using matrix powers.
+        b[i, j] is one iff no walk of length 1 through d exists in
+        the thresholded adjacency (abs(W) >= w_thres).
+        The scalar value sums b * softplus(epsilon - p) over path_pairs.
+        w_thres is epsilon_0 in the mask; epsilon is the softplus margin.
+        sharpness=1 gives ordinary softplus.
+
+        Always return (value, gradient), with gradient shaped (W.size,).
+        Empty path_pairs returns zero and a zero gradient. The hard mask has zero
+        derivative away from threshold crossings and is generally discontinuous
+        at crossings. At W == 0, use zero as the abs subgradient.
+        """
+        W = np.asarray(W, dtype=float)
+        if W.ndim != 2 or W.shape[0] != W.shape[1]:
+            raise ValueError("W must be a square matrix")
+        if len(path_pairs) == 0:
+            return 0.0, np.zeros(W.size)
+
+        d = W.shape[0]
+        A = np.abs(W)
+        powers = [np.eye(d)]
+        p = np.zeros_like(W)
+        adjacency = A >= w_thres
+        reachable = np.zeros_like(adjacency)
+        walk = np.eye(d, dtype=bool)
+        for _ in range(d):
+            powers.append(powers[-1] @ A)
+            p += powers[-1]
+            # Boolean matrix products avoid overflow from counting walks.
+            walk = walk @ adjacency
+            reachable |= walk
+
+        b = ~reachable
+        X = epsilon - p
+        penalties = b * softplus(X, sharpness)
+        value = float(sum(penalties[i, j] for i, j in path_pairs))
+
+        grad_p = np.zeros_like(W)
+        for i, j in path_pairs:
+            grad_p[i, j] -= b[i, j] * sigmoid(sharpness * X[i, j])
+
+        # Reverse through P_k = P_{k-1} @ A and p = sum_k P_k.
+        grad_A = np.zeros_like(W)
+        grad_power = np.zeros_like(W)
+        for k in range(d, 0, -1):
+            grad_power += grad_p
+            grad_A += powers[k - 1].T @ grad_power
+            grad_power = grad_power @ A.T
+
+        return value, (grad_A * np.sign(W)).reshape(-1)
+
     
     def _forbid_trek(W, trek_pairs):
         """Return the mean forbidden-trek penalty and its gradient."""
@@ -796,6 +915,10 @@ def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, vi
             )
             values.append(trek_value)
             gradients.append(np.asarray(trek_grad).reshape(-1))
+        if compare and exist_path_pairs:
+            path_value, path_grad = _exist_paths2(W, w_threshold, exist_path_pairs, sharpness=sharpness, epsilon=10)
+            values.append(path_value)
+            gradients.append(np.asarray(path_grad).reshape(-1))
 
         values = np.asarray(values, dtype=float)
         jacobian = np.vstack(gradients)
@@ -859,7 +982,7 @@ def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, vi
 
         total = (
             len(exist_edge_pairs)
-            + len(exist_path_pairs)
+            + (0 if compare else len(exist_path_pairs))
             + len(exist_trek_pairs)
         )
 
@@ -885,7 +1008,7 @@ def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, vi
             gradients.append(edge_grad)
             offset += n
 
-        if exist_path_pairs:
+        if exist_path_pairs and not compare:
             n = len(exist_path_pairs)
             path_values, path_grad = _exist_paths(
                 W,
@@ -1003,7 +1126,8 @@ def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, vi
         forbid_trek_pairs,
         )
     )
-    inequality_len = len(exist_edge_pairs) + len(exist_path_pairs) + len(exist_trek_pairs)
+    equality_len += int(compare and bool(exist_path_pairs))
+    inequality_len = len(exist_edge_pairs) + (0 if compare else len(exist_path_pairs)) + len(exist_trek_pairs)
     alpha = np.zeros(equality_len, dtype=float)
     beta = np.zeros(inequality_len, dtype=float)
     l2_violation_i, l2_violation_e = np.inf, np.inf
@@ -1066,8 +1190,8 @@ def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, vi
             i_value_new = combined_inequality_constraints(_adj(w_new))
             c_i_new = epsilon - i_value_new  
             ###############################
-            print("equality constraints:", c_e_new)
-            print("inequality constraints:", c_i_new)
+            print("equality constraints:", c_e_new, flush=True)
+            print("inequality constraints:", c_i_new, flush=True)
             ###############################
             # violation_new = _violation(c_e_new, c_i_new)
             l2_violation_i_new, max_violation_i_new, l2_violation_e_new, max_violation_e_new = _violation(c_e_new, c_i_new,)
@@ -1126,6 +1250,7 @@ if __name__ == '__main__':
     parser.add_argument('-r', '--prior_rate', dest='r', default=0.25, type=float)
     parser.add_argument('-t', '--w_threshold', dest='t', default=0.3, type=float)
     parser.add_argument('-ep', '--epsilon', dest='ep', default=1e-1, type=float)
+    parser.add_argument('-c', '--compare', dest='c', action='store_true', default=False)
     args = parser.parse_args()
 
     from prior_notears import utils
@@ -1134,7 +1259,10 @@ if __name__ == '__main__':
     B_true = utils.simulate_dag(d, s0, graph_type)
     print("B_true:", B_true)
     W_true = utils.simulate_parameter(B_true)
-    filename = f"linear_{args.p}_{graph_type}{args.e}_d{d}_{sem_type}_rate{args.r}_epsilon{args.ep}_seed{args.s}_twopenalty.json"
+    if not args.c:
+        filename = f"linear_{args.p}_{graph_type}{args.e}_d{d}_{sem_type}_rate{args.r}_epsilon{args.ep}_seed{args.s}_twopenalty.json"
+    else:
+        filename = f"linear_{args.p}_{graph_type}{args.e}_d{d}_{sem_type}_rate{args.r}_epsilon10_seed{args.s}_twopenalty_compare.json"
 
     noise_scale = np.exp(np.random.uniform(np.log(0.5), np.log(2.0), size=d,))
     X = utils.simulate_linear_sem(W_true, n, sem_type, noise_scale)
@@ -1190,9 +1318,9 @@ if __name__ == '__main__':
         satisfied_no_prior_ll, satisfied_percentage_no_prior_ll = utils.evaluate_prior_knowledge(W_est_no_prior_ll, prior_knowledge_ll)
         print(f'>>> Evaluation with prior knowledge and likelihood loss <<<')
         start_time = time.perf_counter()
-        W_est_prior_ll, sol_success_ll = notears_linear(X_std, lambda1=0.1, loss_type="likelihood", prior_knowledge=prior_knowledge_ll, w_threshold=args.t, epsilon=args.ep)
+        W_est_prior_ll, sol_success_ll = notears_linear(X_std, lambda1=0.1, loss_type="likelihood", prior_knowledge=prior_knowledge_ll, w_threshold=args.t, epsilon=args.ep, compare=args.c,)
         running_time_prior_ll = time.perf_counter() - start_time
-        constraint_values_prior_ll = evaluate_prior_values(W_est_prior_ll, prior_knowledge_ll, args.t)
+        constraint_values_prior_ll = evaluate_prior_values(W_est_prior_ll, prior_knowledge_ll, args.t, args.c)
         satisfied_prior_ll, satisfied_percentage_prior_ll = utils.evaluate_prior_knowledge(W_est_prior_ll, prior_knowledge_ll)
         try:
             if not utils.is_dag(W_est_prior_ll):
@@ -1258,9 +1386,9 @@ if __name__ == '__main__':
             satisfied_no_prior_l2, satisfied_percentage_no_prior_l2 = utils.evaluate_prior_knowledge(W_est_no_prior_l2, prior_knowledge_l2)
             print(f'>>> Evaluation with prior knowledge and l2 loss <<<')
             start_time = time.perf_counter()
-            W_est_prior_l2, sol_success_l2 = notears_linear(X_std, lambda1=0.1, loss_type="l2", prior_knowledge=prior_knowledge_l2, w_threshold=args.t, epsilon=args.ep)
+            W_est_prior_l2, sol_success_l2 = notears_linear(X_std, lambda1=0.1, loss_type="l2", prior_knowledge=prior_knowledge_l2, w_threshold=args.t, epsilon=args.ep, compare=args.c)
             running_time_prior_l2 = time.perf_counter() - start_time
-            constraint_values_prior_l2 = evaluate_prior_values(W_est_prior_l2, prior_knowledge_l2, args.t)
+            constraint_values_prior_l2 = evaluate_prior_values(W_est_prior_l2, prior_knowledge_l2, args.t, args.c)
             satisfied_prior_l2, satisfied_percentage_prior_l2 = utils.evaluate_prior_knowledge(W_est_prior_l2, prior_knowledge_l2)
             try:
                 if not utils.is_dag(W_est_prior_l2):
@@ -1342,6 +1470,45 @@ if __name__ == '__main__':
 #### check gradient of prior knowledge constraints
 # if __name__ == '__main__':
 
+    # d = 4
+    # W = np.array([
+    #     [0.0,  0.6, -0.35,  0.8],
+    #     [0.2,  0.0,  0.5,  -0.4],
+    #     [0.1,  0.4,  0.0,   0.7],
+    #     [-0.1, 0.35, 0.2,   0.0],
+    # ], dtype=float)
+
+    # path_pairs = [(0, 1), (1, 3), (2, 0)]
+    # w_thres = 0.3
+    # epsilon = 0.1
+
+    # # Keep the zero diagonal fixed: abs(W) is not differentiable at zero.
+    # off_diag = ~np.eye(d, dtype=bool)
+
+    # def unpack(x):
+    #     W_test = W.copy()
+    #     W_test[off_diag] = x
+    #     return W_test
+
+    # def objective(x):
+    #     value, _ = _exist_paths2(
+    #         unpack(x), w_thres, path_pairs, epsilon=epsilon,
+    #     )
+    #     return value
+
+    # def gradient(x):
+    #     _, grad = _exist_paths2(
+    #         unpack(x), w_thres, path_pairs,
+    #         epsilon=epsilon,
+    #     )
+    #     return grad.reshape(d, d)[off_diag]
+
+    # x0 = W[off_diag].copy()
+    # absolute_error = check_grad(objective, gradient, x0)
+
+    # print(f"absolute_error = {absolute_error:.3e}")
+    # assert absolute_error < 1e-6
+    # print("values: ", _exist_paths2(W, w_thres, path_pairs, epsilon=epsilon))
     # from unittest.mock import patch
 
     # d = 4
