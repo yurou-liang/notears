@@ -1,4 +1,5 @@
 import argparse
+from cmath import tau
 import json
 import numpy as np
 import scipy.linalg as slin
@@ -99,7 +100,8 @@ def _minimize_finite(fun, x0, bounds, max_retries=16, max_restarts=32,
         radius = full_radius
 
 ####just for test, to delete later #######################################
-def _forbid_edges(W, edge_pairs):
+
+def _forbid_edges(W, edge_pairs, coefficient=None):
     """forbid edges from the list of index pairs.
     
     Args:
@@ -109,15 +111,27 @@ def _forbid_edges(W, edge_pairs):
     Returns:
         float: Values Sum of W[i, j] for each (i, j) pair
     """
-    e = np.sum([(W * W)[i, j] for i, j in edge_pairs]) / len(edge_pairs)
-    G_e = np.zeros_like(W)
-    for i, j in edge_pairs:
-        G_e[i, j] += 2.0 * W[i, j]
-    G_e = G_e / len(edge_pairs)
-    return e, G_e.reshape(-1)
+    if len(edge_pairs) == 0:
+        if coefficient is None:
+            return np.empty(0)
+        return np.empty(0), np.zeros(W.size)
+    e = np.array([W[i, j] ** 2 for i, j in edge_pairs])
+    if coefficient is None:
+        return e
+    coefficient = np.asarray(coefficient, dtype=float)
+    if coefficient.shape != (len(edge_pairs),):
+        raise ValueError("Provide one coefficient per edge pair")
+    grad_W = np.zeros_like(W)
+    for k, (i, j) in enumerate(edge_pairs):
+        grad_W[i, j] += coefficient[k] * 2.0 * W[i, j]
+    return e, grad_W.reshape(-1)
 
 def _exist_edges(W, w_thres, edge_pairs, coefficient=None):
     """Return edge values and their coefficient-weighted gradient."""
+    if len(edge_pairs) == 0:
+        if coefficient is None:
+            return np.empty(0)
+        return np.empty(0), np.zeros(W.size)
     values = np.array([W[i, j] ** 2 - w_thres ** 2 for i, j in edge_pairs])
     if coefficient is None:
         return values
@@ -129,38 +143,37 @@ def _exist_edges(W, w_thres, edge_pairs, coefficient=None):
         grad_W[i, j] += coefficient[k] * 2.0 * W[i, j]
     return values, grad_W.reshape(-1)
 
-def _forbid_paths(W, path_pairs):
+def _forbid_paths(W, path_pairs, coefficient=None):
+    """Return path penalties and optionally their weighted gradient."""
+    W = np.asarray(W, dtype=float)
 
-    """Compute the forbidden-path penalty and its gradient.
-    Args:
-        W: Array of shape (d, d).
-        path_pairs: Sequence of (start, end) index pairs.
-    Returns:
-        value: Scalar penalty.
-        gradient: Flattened gradient with respect to W.
-    """
+    if coefficient is not None:
+        coefficient = np.asarray(coefficient, dtype=float)
+        if coefficient.shape != (len(path_pairs),):
+            raise ValueError("Provide one coefficient per path pair")
 
     if len(path_pairs) == 0:
-        raise ValueError("path_pairs must not be empty")
-    W = np.asarray(W, dtype=float)
-    scale = len(path_pairs)
+        if coefficient is None:
+            return np.empty(0)
+        return np.empty(0), np.zeros(W.size)
+
     A = W * W
     E = slin.expm(A)
-    M = np.zeros_like(W, dtype=float)
-    for i, j in path_pairs:
-        M[i, j] += 1.0
-    value = np.sum(M * E) / scale
+    values = np.array([E[i, j] for i, j in path_pairs])
 
-    # Adjoint of the matrix-exponential Fréchet derivative
+    if coefficient is None:
+        return values
+
+    M = np.zeros_like(W)
+    for k, (i, j) in enumerate(path_pairs):
+        M[i, j] += coefficient[k]
+
     grad_A = slin.expm_frechet(
-        A.T,
-        M,
-        compute_expm=False,
-    ) / scale
-
-    # A = W ⊙ W, so dA/dW = 2W
+        A.T, M, compute_expm=False
+    )
     grad_W = 2.0 * W * grad_A
-    return value, grad_W.reshape(-1)
+
+    return values, grad_W.reshape(-1)
 
 def _exist_paths(W, w_thres, path_pairs, coefficient=None, sharpness=50.0):
     """Return path values and their coefficient-weighted gradient."""
@@ -202,7 +215,7 @@ def _exist_paths(W, w_thres, path_pairs, coefficient=None, sharpness=50.0):
     return values, grad_W.reshape(-1)
 
 def _exist_paths2(W, w_thres, path_pairs,
-                  sharpness=50.0, epsilon=10):
+                sharpness=50.0, epsilon=10):
     """Return the sum of masked missing-path penalties and its gradient.
 
     p = sum_{k=1}^d abs(W)^k, using matrix powers.
@@ -240,8 +253,7 @@ def _exist_paths2(W, w_thres, path_pairs,
     b = ~reachable
     X = epsilon - p
     penalties = b * softplus(X, sharpness)
-    scale = len(path_pairs)
-    value = float(sum(penalties[i, j] for i, j in path_pairs))/scale
+    value = float(sum(penalties[i, j] for i, j in path_pairs))
 
     grad_p = np.zeros_like(W)
     for i, j in path_pairs:
@@ -255,33 +267,43 @@ def _exist_paths2(W, w_thres, path_pairs,
         grad_A += powers[k - 1].T @ grad_power
         grad_power = grad_power @ A.T
 
-    return value, (grad_A * np.sign(W)).reshape(-1)/scale
+    return value, (grad_A * np.sign(W)).reshape(-1)
 
 
-def _forbid_trek(W, trek_pairs):
-    """Return the mean forbidden-trek penalty and its gradient."""
-    E = slin.expm(W * W)
-    scale = len(trek_pairs)
+def _forbid_trek(W, trek_pairs, coefficient=None):
+    """Return trek penalties and optionally their weighted gradient."""
+    W = np.asarray(W, dtype=float)
 
-    M = np.zeros_like(W, dtype=np.result_type(W, np.float64))
-    for i, j in trek_pairs:
-        M[i, j] += 1.0
+    if coefficient is not None:
+        coefficient = np.asarray(coefficient, dtype=float)
+        if coefficient.shape != (len(trek_pairs),):
+            raise ValueError("Provide one coefficient per trek pair")
 
-    value = np.sum(M * (E.T @ E)) / scale
+    if len(trek_pairs) == 0:
+        if coefficient is None:
+            return np.empty(0)
+        return np.empty(0), np.zeros(W.size)
 
-    # Gradient with respect to E.
-    grad_E = E @ (M + M.T) / scale
+    A = W * W
+    E = slin.expm(A)
+    T = E.T @ E
+    values = np.array([T[i, j] for i, j in trek_pairs])
 
-    # Adjoint of the matrix-exponential derivative.
+    if coefficient is None:
+        return values
+
+    M = np.zeros_like(W)
+    for k, (i, j) in enumerate(trek_pairs):
+        M[i, j] += coefficient[k]
+
+    grad_E = E @ (M + M.T)
     grad_A = slin.expm_frechet(
-        (W * W).T,
-        grad_E,
-        compute_expm=False,
+        A.T, grad_E, compute_expm=False
     )
-
     grad_W = 2.0 * W * grad_A
-    return value, grad_W.reshape(-1)
-    
+
+    return values, grad_W.reshape(-1)
+
 def _exist_trek(W, w_thres, trek_pairs, coefficient=None, sharpness=50.0):
     """Return trek values and their coefficient-weighted gradient.
 
@@ -331,54 +353,90 @@ def _exist_trek(W, w_thres, trek_pairs, coefficient=None, sharpness=50.0):
 
     return values, grad_W.reshape(-1)
 
-def combined_equality_constraints(W, forbid_edge_pairs, forbid_path_pairs, forbid_trek_pairs):
-    """Combine active equality constraints and their Jacobians.
+def _adj(w):
+    """Convert doubled variables ([2 d^2] array) back to original variables ([d, d] matrix)."""
+    return (w[:d * d] - w[d * d:]).reshape([d, d])
 
-    Returns:
-        values: Shape (m,), where m is the number of active constraints.
-        jacobian: Shape (m, d*d).
-    """
+def combined_equality_constraints(W, coefficient=None):
+    """Return values only, or (values, coefficient-weighted gradient)."""
     values = []
     gradients = []
 
-    h_value, h_grad = _h(W)
-    values.append(h_value)
-    gradients.append(np.asarray(h_grad).reshape(-1))
+    total = (
+        len(forbid_edge_pairs)
+        + len(forbid_path_pairs)
+        + len(forbid_trek_pairs)
+        + int(compare and bool(exist_path_pairs))
+    )
+
+    values_only = coefficient is None
+    if values_only:
+        coefficient = np.zeros(total)
+    else:
+        coefficient = np.asarray(coefficient, dtype=float)
+        if coefficient.shape != (total,):
+            raise ValueError("Provide one coefficient per equality penalty")
+
+    offset = 0
 
     if forbid_edge_pairs:
-        edge_value, edge_grad = _forbid_edges(
-            W, forbid_edge_pairs
+        n = len(forbid_edge_pairs)
+        edge_values, edge_grad = _forbid_edges(
+            W, forbid_edge_pairs,
+            coefficient[offset:offset + n],
         )
-        values.append(edge_value)
-        gradients.append(np.asarray(edge_grad).reshape(-1))
+        values.append(np.atleast_1d(edge_values))
+        gradients.append(edge_grad)
+        offset += n
 
     if forbid_path_pairs:
-        path_value, path_grad = _forbid_paths(
-            W, forbid_path_pairs
+        n = len(forbid_path_pairs)
+        path_values, path_grad = _forbid_paths(
+            W, forbid_path_pairs,
+            coefficient[offset:offset + n],
         )
-        values.append(path_value)
-        gradients.append(np.asarray(path_grad).reshape(-1))
+        values.append(np.atleast_1d(path_values))
+        gradients.append(path_grad)
+        offset += n
 
     if forbid_trek_pairs:
-        trek_value, trek_grad = _forbid_trek(
-            W, forbid_trek_pairs
+        n = len(forbid_trek_pairs)
+        trek_values, trek_grad = _forbid_trek(
+            W, forbid_trek_pairs,
+            coefficient[offset:offset + n],
         )
-        values.append(trek_value)
-        gradients.append(np.asarray(trek_grad).reshape(-1))
+        values.append(np.atleast_1d(trek_values))
+        gradients.append(trek_grad)
+        offset += n
 
-    values = np.asarray(values, dtype=float)
-    jacobian = np.vstack(gradients)
+    if compare and exist_path_pairs:
+        # _exist_paths2 returns one aggregate scalar penalty.
+        path_value, path_grad = _exist_paths2(
+            W, w_threshold, exist_path_pairs,
+            sharpness=sharpness, epsilon=10,
+        )
+        values.append(np.atleast_1d(path_value))
+        gradients.append(coefficient[offset] * path_grad)
 
-    return values, jacobian
+    values = np.concatenate(values) if values else np.empty(0)
 
-def combined_inequality_constraints(W, w_threshold, exist_edge_pairs, exist_path_pairs, exist_trek_pairs, coefficient=None):
+    if values_only:
+        return values
+
+    weighted_grad = (
+        np.sum(gradients, axis=0)
+        if gradients else np.zeros(W.size)
+    )
+    return values, weighted_grad
+
+def combined_inequality_constraints(W, coefficient=None):
     """Return values only, or (values, coefficient-weighted gradient)."""
     values = []
     gradients = []
 
     total = (
         len(exist_edge_pairs)
-        + len(exist_path_pairs)
+        + (0 if compare else len(exist_path_pairs))
         + len(exist_trek_pairs)
     )
 
@@ -404,14 +462,14 @@ def combined_inequality_constraints(W, w_threshold, exist_edge_pairs, exist_path
         gradients.append(edge_grad)
         offset += n
 
-    if exist_path_pairs:
+    if exist_path_pairs and not compare:
         n = len(exist_path_pairs)
         path_values, path_grad = _exist_paths(
             W,
             w_threshold,
             exist_path_pairs,
             coefficient[offset:offset + n],
-            sharpness=50,
+            sharpness=sharpness,
         )
         values.append(np.atleast_1d(path_values))
         gradients.append(path_grad)
@@ -424,7 +482,7 @@ def combined_inequality_constraints(W, w_threshold, exist_edge_pairs, exist_path
             w_threshold,
             exist_trek_pairs,
             coefficient[offset:offset + n],
-            sharpness=50,
+            sharpness=sharpness,
         )
         values.append(np.atleast_1d(trek_values))
         gradients.append(trek_grad)
@@ -509,7 +567,7 @@ def loss(W, X):
     return loss, G_loss.ravel()
 ####just for test, to delete later #######################################
 
-def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, violation_tol=1e-8, rho_max=1e+16, w_threshold=0.3, sharpness=50.0, epsilon=1e-1, compare = False):
+def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, h_tol=1e-8, rho_max=1e+16, w_threshold=0.3, sharpness=50.0, epsilon=1e-1, compare = False):
     """Solve min_W L(W; X) + lambda1 ‖W‖_1 s.t. h(W) = 0 using augmented Lagrangian.
 
     Args:
@@ -518,7 +576,7 @@ def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, vi
         loss_type (str): l2, likelihood, logistic, poisson
         prior_knowledge (dict): prior knowledge
         max_iter (int): max num of dual ascent steps
-        violation_tol (float): exit if |violation(w_est)| <= violation_tol
+        h_tol (float): exit if h(W) <= h_tol
         rho_max (float): exit if rho >= rho_max
         w_threshold (float): drop edge if |weight| < threshold
         sharpness (float): softplus sharpness parameter
@@ -579,7 +637,7 @@ def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, vi
         G_h = E.T * W * 2
         return h, G_h
 
-    def _forbid_edges(W, edge_pairs):
+    def _forbid_edges(W, edge_pairs, coefficient=None):
         """forbid edges from the list of index pairs.
         
         Args:
@@ -589,15 +647,27 @@ def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, vi
         Returns:
             float: Values Sum of W[i, j] for each (i, j) pair
         """
-        e = np.sum([(W * W)[i, j] for i, j in edge_pairs]) / len(edge_pairs)
-        G_e = np.zeros_like(W)
-        for i, j in edge_pairs:
-            G_e[i, j] += 2.0 * W[i, j]
-        G_e = G_e / len(edge_pairs)
-        return e, G_e.reshape(-1)
+        if len(edge_pairs) == 0:
+            if coefficient is None:
+                return np.empty(0)
+            return np.empty(0), np.zeros(W.size)
+        e = np.array([W[i, j] ** 2 for i, j in edge_pairs])
+        if coefficient is None:
+            return e
+        coefficient = np.asarray(coefficient, dtype=float)
+        if coefficient.shape != (len(edge_pairs),):
+            raise ValueError("Provide one coefficient per edge pair")
+        grad_W = np.zeros_like(W)
+        for k, (i, j) in enumerate(edge_pairs):
+            grad_W[i, j] += coefficient[k] * 2.0 * W[i, j]
+        return e, grad_W.reshape(-1)
 
     def _exist_edges(W, w_thres, edge_pairs, coefficient=None):
         """Return edge values and their coefficient-weighted gradient."""
+        if len(edge_pairs) == 0:
+            if coefficient is None:
+                return np.empty(0)
+            return np.empty(0), np.zeros(W.size)
         values = np.array([W[i, j] ** 2 - w_thres ** 2 for i, j in edge_pairs])
         if coefficient is None:
             return values
@@ -609,57 +679,37 @@ def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, vi
             grad_W[i, j] += coefficient[k] * 2.0 * W[i, j]
         return values, grad_W.reshape(-1)
 
-    def _forbid_paths(W, path_pairs):
+    def _forbid_paths(W, path_pairs, coefficient=None):
+        """Return path penalties and optionally their weighted gradient."""
+        W = np.asarray(W, dtype=float)
 
-        """Compute the forbidden-path penalty and its gradient.
-        Args:
-            W: Array of shape (d, d).
-            path_pairs: Sequence of (start, end) index pairs.
-        Returns:
-            value: Scalar penalty.
-            gradient: Flattened gradient with respect to W.
-        """
+        if coefficient is not None:
+            coefficient = np.asarray(coefficient, dtype=float)
+            if coefficient.shape != (len(path_pairs),):
+                raise ValueError("Provide one coefficient per path pair")
 
         if len(path_pairs) == 0:
-            raise ValueError("path_pairs must not be empty")
-        W = np.asarray(W, dtype=float)
-        scale = len(path_pairs)
+            if coefficient is None:
+                return np.empty(0)
+            return np.empty(0), np.zeros(W.size)
+
         A = W * W
         E = slin.expm(A)
-        M = np.zeros_like(W, dtype=float)
-        for i, j in path_pairs:
-            M[i, j] += 1.0
-        value = np.sum(M * E) / scale
+        values = np.array([E[i, j] for i, j in path_pairs])
 
-        # Adjoint of the matrix-exponential Fréchet derivative
+        if coefficient is None:
+            return values
+
+        M = np.zeros_like(W)
+        for k, (i, j) in enumerate(path_pairs):
+            M[i, j] += coefficient[k]
+
         grad_A = slin.expm_frechet(
-            A.T,
-            M,
-            compute_expm=False,
-        ) / scale
-
-        # A = W ⊙ W, so dA/dW = 2W
+            A.T, M, compute_expm=False
+        )
         grad_W = 2.0 * W * grad_A
-        return value, grad_W.reshape(-1)
 
-    # def _exist_paths(W, w_thres, path_pairs):
-    #     X = W * W - w_thres * w_thres
-    #     A = softplus(X, sharpness)
-    #     E = slin.expm(A)
-
-    #     residuals = np.array([E[i, j] for i, j in path_pairs])
-
-    #     dA_dX = sigmoid(sharpness * X)          # derivative of softplus
-    #     dX_dW = 2.0 * W                    # derivative of W^2
-    #     J = np.zeros((len(path_pairs), W.size), dtype=float)
-
-    #     for k, (i, j) in enumerate(path_pairs):
-    #         M = np.zeros_like(W, dtype=np.float64)
-    #         M[i, j] = 1.0
-    #         grad_A = slin.expm_frechet(A.T, M, compute_expm=False)
-    #         J[k, :] = (dX_dW * dA_dX * grad_A).reshape(-1)
-
-    #     return residuals, J
+        return values, grad_W.reshape(-1)
 
     def _exist_paths(W, w_thres, path_pairs, coefficient=None, sharpness=50.0):
         """Return path values and their coefficient-weighted gradient."""
@@ -756,77 +806,39 @@ def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, vi
         return value, (grad_A * np.sign(W)).reshape(-1)
 
     
-    def _forbid_trek(W, trek_pairs):
-        """Return the mean forbidden-trek penalty and its gradient."""
-        E = slin.expm(W * W)
-        scale = len(trek_pairs)
+    def _forbid_trek(W, trek_pairs, coefficient=None):
+        """Return trek penalties and optionally their weighted gradient."""
+        W = np.asarray(W, dtype=float)
 
-        M = np.zeros_like(W, dtype=np.result_type(W, np.float64))
-        for i, j in trek_pairs:
-            M[i, j] += 1.0
+        if coefficient is not None:
+            coefficient = np.asarray(coefficient, dtype=float)
+            if coefficient.shape != (len(trek_pairs),):
+                raise ValueError("Provide one coefficient per trek pair")
 
-        value = np.sum(M * (E.T @ E)) / scale
+        if len(trek_pairs) == 0:
+            if coefficient is None:
+                return np.empty(0)
+            return np.empty(0), np.zeros(W.size)
 
-        # Gradient with respect to E.
-        grad_E = E @ (M + M.T) / scale
+        A = W * W
+        E = slin.expm(A)
+        T = E.T @ E
+        values = np.array([T[i, j] for i, j in trek_pairs])
 
-        # Adjoint of the matrix-exponential derivative.
+        if coefficient is None:
+            return values
+
+        M = np.zeros_like(W)
+        for k, (i, j) in enumerate(trek_pairs):
+            M[i, j] += coefficient[k]
+
+        grad_E = E @ (M + M.T)
         grad_A = slin.expm_frechet(
-            (W * W).T,
-            grad_E,
-            compute_expm=False,
+            A.T, grad_E, compute_expm=False
         )
-
         grad_W = 2.0 * W * grad_A
-        return value, grad_W.reshape(-1)
-    
-    # def _exist_trek(W, w_thres, trek_pairs, coefficient):
 
-    #     """Return trek residuals and their Jacobian.
-
-    #     Args:
-    #         W: Weight matrix with shape (d, d).
-    #         w_thres: Threshold for trek existence.
-    #         trek_pairs: Sequence of endpoint pairs (i, j).
-    #         sharpness: Softplus sharpness parameter.
-
-    #     Returns:
-    #         residuals: Array with shape (len(trek_pairs),).
-    #         J: Jacobian with shape (len(trek_pairs), W.size).
-    #     """
-
-    #     W = np.asarray(W, dtype=float)
-    #     X = W * W - w_thres * w_thres
-    #     A = softplus(X, sharpness)
-    #     E = slin.expm(A)
-    #     T = E.T @ E
-
-    #     dA_dX = sigmoid(sharpness * X)
-    #     residuals = np.empty(len(trek_pairs), dtype=float)
-    #     J = np.empty((len(trek_pairs), W.size), dtype=float)
-    #     for k, (i, j) in enumerate(trek_pairs):
-    #         residuals[k] = T[i, j]
-    #         # Gradient of T[i, j] with respect to E
-    #         grad_E = np.zeros_like(E, dtype=float)
-    #         if i == j:
-    #             grad_E[:, i] = 2.0 * E[:, i]
-    #         else:
-    #             grad_E[:, i] = E[:, j]
-    #             grad_E[:, j] = E[:, i]
-    #         # Adjoint derivative through E = expm(A)
-    #         grad_A = slin.expm_frechet(
-    #             A.T,
-    #             grad_E,
-    #             compute_expm=False,
-    #         )
-
-    #         # Elementwise chain:
-    #         # A = softplus_beta(X)
-    #         # X = W**2 - w_thres**2
-    #         grad_W = grad_A * dA_dX * (2.0 * W)
-    #         J[k, :] = grad_W.reshape(-1)
-
-    #     return residuals, J
+        return values, grad_W.reshape(-1)
     
     def _exist_trek(W, w_thres, trek_pairs, coefficient=None, sharpness=50.0):
         """Return trek values and their coefficient-weighted gradient.
@@ -881,99 +893,77 @@ def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, vi
         """Convert doubled variables ([2 d^2] array) back to original variables ([d, d] matrix)."""
         return (w[:d * d] - w[d * d:]).reshape([d, d])
 
-    def combined_equality_constraints(W):
-        """Combine active equality constraints and their Jacobians.
-
-        Returns:
-            values: Shape (m,), where m is the number of active constraints.
-            jacobian: Shape (m, d*d).
-        """
+    def combined_equality_constraints(W, coefficient=None):
+        """Return values only, or (values, coefficient-weighted gradient)."""
         values = []
         gradients = []
 
-        h_value, h_grad = _h(W)
-        values.append(h_value)
-        gradients.append(np.asarray(h_grad).reshape(-1))
+        total = (
+            len(forbid_edge_pairs)
+            + len(forbid_path_pairs)
+            + len(forbid_trek_pairs)
+            + int(compare and bool(exist_path_pairs))
+        )
+
+        values_only = coefficient is None
+        if values_only:
+            coefficient = np.zeros(total)
+        else:
+            coefficient = np.asarray(coefficient, dtype=float)
+            if coefficient.shape != (total,):
+                raise ValueError("Provide one coefficient per equality penalty")
+
+        offset = 0
 
         if forbid_edge_pairs:
-            edge_value, edge_grad = _forbid_edges(
-                W, forbid_edge_pairs
+            n = len(forbid_edge_pairs)
+            edge_values, edge_grad = _forbid_edges(
+                W, forbid_edge_pairs,
+                coefficient[offset:offset + n],
             )
-            values.append(edge_value)
-            gradients.append(np.asarray(edge_grad).reshape(-1))
+            values.append(np.atleast_1d(edge_values))
+            gradients.append(edge_grad)
+            offset += n
 
         if forbid_path_pairs:
-            path_value, path_grad = _forbid_paths(
-                W, forbid_path_pairs
+            n = len(forbid_path_pairs)
+            path_values, path_grad = _forbid_paths(
+                W, forbid_path_pairs,
+                coefficient[offset:offset + n],
             )
-            values.append(path_value)
-            gradients.append(np.asarray(path_grad).reshape(-1))
+            values.append(np.atleast_1d(path_values))
+            gradients.append(path_grad)
+            offset += n
 
         if forbid_trek_pairs:
-            trek_value, trek_grad = _forbid_trek(
-                W, forbid_trek_pairs
+            n = len(forbid_trek_pairs)
+            trek_values, trek_grad = _forbid_trek(
+                W, forbid_trek_pairs,
+                coefficient[offset:offset + n],
             )
-            values.append(trek_value)
-            gradients.append(np.asarray(trek_grad).reshape(-1))
+            values.append(np.atleast_1d(trek_values))
+            gradients.append(trek_grad)
+            offset += n
+
         if compare and exist_path_pairs:
-            path_value, path_grad = _exist_paths2(W, w_threshold, exist_path_pairs, sharpness=sharpness, epsilon=10)
-            values.append(path_value)
-            gradients.append(np.asarray(path_grad).reshape(-1))
+            # _exist_paths2 returns one aggregate scalar penalty.
+            path_value, path_grad = _exist_paths2(
+                W, w_threshold, exist_path_pairs,
+                sharpness=sharpness, epsilon=10,
+            )
+            values.append(np.atleast_1d(path_value))
+            gradients.append(coefficient[offset] * path_grad)
 
-        values = np.asarray(values, dtype=float)
-        jacobian = np.vstack(gradients)
+        values = np.concatenate(values) if values else np.empty(0)
 
-        return values, jacobian
+        if values_only:
+            return values
 
-    # def combined_inequality_constraints(W, coefficient):
-    #     """Combine active inequality constraints and their Jacobians.
-
-    #     Returns:
-    #         values: Shape (m,), with one value per pair.
-    #         jacobian: Shape (m, d*d).
-    #     """
-    #     values = []
-    #     jacobians = []
-
-    #     if exist_edge_pairs:
-    #         edge_values, edge_jacobian = _exist_edges(
-    #             W,
-    #             w_threshold,
-    #             exist_edge_pairs,
-    #         )
-    #         values.append(np.atleast_1d(edge_values))
-    #         jacobians.append(np.atleast_2d(edge_jacobian))
-
-    #     if exist_path_pairs:
-    #         path_values, path_jacobian = _exist_paths(
-    #             W,
-    #             w_threshold,
-    #             exist_path_pairs,
-    #             coefficient
-    #         )
-    #         values.append(np.atleast_1d(path_values))
-    #         jacobians.append(np.atleast_2d(path_jacobian))
-
-    #     if exist_trek_pairs:
-    #         trek_values, trek_jacobian = _exist_trek(
-    #             W,
-    #             w_threshold,
-    #             exist_trek_pairs,
-    #             coefficient
-    #         )
-    #         values.append(np.atleast_1d(trek_values))
-    #         jacobians.append(np.atleast_2d(trek_jacobian))
-
-    #     if not values:
-    #         return (
-    #             np.empty(0, dtype=float),
-    #             np.empty((0, W.size), dtype=float),
-    #         )
-
-    #     values = np.concatenate(values)
-    #     jacobian = np.vstack(jacobians)
-
-    #     return values, jacobian
+        weighted_grad = (
+            np.sum(gradients, axis=0)
+            if gradients else np.zeros(W.size)
+        )
+        return values, weighted_grad
 
     def combined_inequality_constraints(W, coefficient=None):
         """Return values only, or (values, coefficient-weighted gradient)."""
@@ -1059,16 +1049,21 @@ def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, vi
         """Evaluate value and gradient of augmented Lagrangian for doubled variables ([2 d^2] array)."""
         W = _adj(w)
         loss, G_loss = _loss(W)
-        c_e, G_e = combined_equality_constraints(W)
+        h, G_h = _h(W)
+        c_e, G_e = combined_equality_constraints(W, coefficient=None)
         i_value = combined_inequality_constraints(W, coefficient=None)
-        c_i = epsilon - i_value  
-        z = beta + rho_i * c_i
-        # value = softplus(z, sharpness)
-        # dvalue_dz = sigmoid(sharpness * z)
-        positive_part = np.maximum(z, 0.0)
-        _, G_i = combined_inequality_constraints(W, positive_part)
-        obj = loss + 0.5 * rho_e * np.sum(c_e**2) + alpha @ c_e + ( 1 / (2 * rho_i) ) * (np.sum(positive_part**2) - np.sum(beta**2)) + lambda1 * w.sum()
-        G_smooth = G_loss.reshape(-1) + G_e.T @ (alpha + rho_e * c_e) -G_i
+        tau = np.array([1.0, 1.0], dtype=np.float64)
+        tau_e = tau[:c_e.size]
+        tau_i = tau[c_e.size:]
+        residual = epsilon - i_value
+        c_i = softplus(residual, sharpness)
+        c = np.concatenate((c_e.reshape(-1), c_i.reshape(-1)))
+        _, G_e = combined_equality_constraints(W, coefficient=tau_e)
+        coefficient = -tau_i * sigmoid(sharpness * residual)
+        _, G_i = combined_inequality_constraints(W, coefficient=coefficient)
+        G_prior = G_e + G_i
+        obj = loss + tau @ c + 0.5 * rho * h * h + alpha * h + lambda1 * w.sum()
+        G_smooth = G_loss.reshape(-1) + G_prior + (rho * h + alpha) * G_h.reshape(-1)
         g_obj = np.concatenate((G_smooth + lambda1, - G_smooth + lambda1), axis=None)
         return obj, g_obj
 
@@ -1116,40 +1111,22 @@ def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, vi
 
     n, d = X.shape
     # w_est = np.random.uniform(0.0, 0.1, size=2 * d * d)  # double w_est into (w_pos, w_neg)
-    w_est = np.zeros(2 * d * d)
-    rho_e, rho_i = 1.0, 1.0
-    equality_len = 1 + sum(
-    bool(pairs)
-    for pairs in (
-        forbid_edge_pairs,
-        forbid_path_pairs,
-        forbid_trek_pairs,
-        )
-    )
-    equality_len += int(compare and bool(exist_path_pairs))
-    inequality_len = len(exist_edge_pairs) + (0 if compare else len(exist_path_pairs)) + len(exist_trek_pairs)
-    alpha = np.zeros(equality_len, dtype=float)
-    beta = np.zeros(inequality_len, dtype=float)
-    l2_violation_i, l2_violation_e = np.inf, np.inf
-
+    w_est, rho, alpha, h = np.zeros(2 * d * d), 1.0, 0.0, np.inf
     weight_bound = 5.0
     bnds = [(0, 0) if i == j else (0, weight_bound) for _ in range(2) for i in range(d) for j in range(d)]
 
     if loss_type in ('l2', 'likelihood'):
         X = X - np.mean(X, axis=0, keepdims=True)
-    lower_bounds = np.asarray([bound[0] for bound in bnds], dtype=float)
-    upper_bounds = np.asarray([bound[1] for bound in bnds], dtype=float)
     for outer_iter in range(max_iter):
-        w_new, c_e_new, c_i_new = None, None, None
-        penalty_limit = False
+        w_new, h_new = None, None
         inner_attempt = 0
-        while True:
+        while rho < rho_max:
             inner_attempt += 1
-            sol = _minimize_finite(_func, w_est, bnds)
+            sol = sopt.minimize(_func, w_est, method='L-BFGS-B', jac=True, bounds=bnds, options={"maxls": 100, "ftol": 1e-15})
 
             if not sol.success:
                 print("L-BFGS-B warning:", sol.message)
-                print("rho_i:", rho_i, "rho_e:", rho_e)
+                print("rho:", rho)
 
             if not np.isfinite(sol.fun):
                 raise FloatingPointError(
@@ -1161,11 +1138,6 @@ def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, vi
                     "The optimizer returned non-finite weights"
                 )
             
-            # Bound-projected gradient mapping for the doubled variables.
-            # A raw gradient can be nonzero at a valid bound-constrained optimum.
-            projected_gradient = sol.x - np.clip(
-                sol.x - sol.jac, lower_bounds, upper_bounds
-            )
             diagnostics = {
                 "outer_iter": outer_iter + 1,
                 "inner_attempt": inner_attempt,
@@ -1174,63 +1146,31 @@ def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, vi
                 "message": str(sol.message),
                 "nit": int(sol.nit),
                 "nfev": int(sol.nfev),
-                "overflow_retries": sol.overflow_retries,
-                "search_radius": sol.search_radius,
                 "objective": float(sol.fun),
-                "projected_gradient_inf": float(np.max(np.abs(projected_gradient))),
                 "weight_change_inf": float(np.max(np.abs(_adj(sol.x) - _adj(w_est)))),
-                "rho_e": float(rho_e),
-                "rho_i": float(rho_i),
-                "alpha_inf": float(np.max(np.abs(alpha))) if alpha.size else 0.0,
-                "beta_inf": float(np.max(np.abs(beta))) if beta.size else 0.0,
+                "rho": float(rho),
+                "alpha": float(alpha),
             }
             print("inner_solver:", json.dumps(diagnostics), flush=True)
             w_new = sol.x
             c_e_new, _ = combined_equality_constraints(_adj(w_new))
             i_value_new = combined_inequality_constraints(_adj(w_new))
-            c_i_new = epsilon - i_value_new  
+            c_i_new = np.maximum(epsilon - i_value_new, 0.0)
             ###############################
             print("equality constraints:", c_e_new, flush=True)
             print("inequality constraints:", c_i_new, flush=True)
             ###############################
-            # violation_new = _violation(c_e_new, c_i_new)
-            l2_violation_i_new, max_violation_i_new, l2_violation_e_new, max_violation_e_new = _violation(c_e_new, c_i_new,)
-            increase_i = (
-                max_violation_i_new > violation_tol
-                and l2_violation_i_new > 0.25 * l2_violation_i
-            )
-            increase_e = (
-                max_violation_e_new > violation_tol
-                and l2_violation_e_new > 0.25 * l2_violation_e
-            )
-
-            if not (increase_i or increase_e):
+            h_new, _ = _h(_adj(w_new))
+            if h_new > 0.25 * h:
+                rho *= 10
+            else:
                 break
-
-            next_rho_i = min(10 * rho_i, rho_max) if increase_i else rho_i
-            next_rho_e = min(10 * rho_e, rho_max) if increase_e else rho_e
-            if next_rho_i == rho_i and next_rho_e == rho_e:
-                penalty_limit = True
-                break
-
-            rho_i, rho_e = next_rho_i, next_rho_e
-
-        w_est, l2_violation_i, l2_violation_e = w_new, l2_violation_i_new, l2_violation_e_new
-        feasible = max(max_violation_e_new, max_violation_i_new) <= violation_tol
-        if feasible:
-            print("Constraint tolerance reached. rho_i:", rho_i, "rho_e:", rho_e)
+        w_est, h = w_new, h_new
+        alpha += rho * h
+        if h <= h_tol or rho >= rho_max:
+            print("final rho:", rho)
+            print("final h:", h)
             break
-        if penalty_limit:
-            print(
-                "No further penalty increase.",
-                "rho_i:", rho_i, "rho_e:", rho_e,
-            )
-
-        # These are the penalties used in the accepted inner solve.
-        alpha += rho_e * c_e_new
-        beta = np.maximum(beta + rho_i * c_i_new, 0.0)
-    else:
-        print("Outer iteration limit reached without feasibility.")
     W_est = _adj(w_est)
     W_est[np.abs(W_est) < w_threshold] = 0
     return W_est, bool(sol.success)
