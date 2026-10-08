@@ -353,11 +353,7 @@ def _exist_trek(W, w_thres, trek_pairs, coefficient=None, sharpness=50.0):
 
     return values, grad_W.reshape(-1)
 
-def _adj(w):
-    """Convert doubled variables ([2 d^2] array) back to original variables ([d, d] matrix)."""
-    return (w[:d * d] - w[d * d:]).reshape([d, d])
-
-def combined_equality_constraints(W, coefficient=None):
+def combined_equality_constraints(W, forbid_edge_pairs, forbid_path_pairs, forbid_trek_pairs, coefficient=None):
     """Return values only, or (values, coefficient-weighted gradient)."""
     values = []
     gradients = []
@@ -366,7 +362,6 @@ def combined_equality_constraints(W, coefficient=None):
         len(forbid_edge_pairs)
         + len(forbid_path_pairs)
         + len(forbid_trek_pairs)
-        + int(compare and bool(exist_path_pairs))
     )
 
     values_only = coefficient is None
@@ -409,15 +404,6 @@ def combined_equality_constraints(W, coefficient=None):
         gradients.append(trek_grad)
         offset += n
 
-    if compare and exist_path_pairs:
-        # _exist_paths2 returns one aggregate scalar penalty.
-        path_value, path_grad = _exist_paths2(
-            W, w_threshold, exist_path_pairs,
-            sharpness=sharpness, epsilon=10,
-        )
-        values.append(np.atleast_1d(path_value))
-        gradients.append(coefficient[offset] * path_grad)
-
     values = np.concatenate(values) if values else np.empty(0)
 
     if values_only:
@@ -429,14 +415,14 @@ def combined_equality_constraints(W, coefficient=None):
     )
     return values, weighted_grad
 
-def combined_inequality_constraints(W, coefficient=None):
+def combined_inequality_constraints(W, w_threshold, exist_edge_pairs, exist_path_pairs, exist_trek_pairs, coefficient=None):
     """Return values only, or (values, coefficient-weighted gradient)."""
     values = []
     gradients = []
 
     total = (
         len(exist_edge_pairs)
-        + (0 if compare else len(exist_path_pairs))
+        + len(exist_path_pairs)
         + len(exist_trek_pairs)
     )
 
@@ -462,7 +448,7 @@ def combined_inequality_constraints(W, coefficient=None):
         gradients.append(edge_grad)
         offset += n
 
-    if exist_path_pairs and not compare:
+    if exist_path_pairs:
         n = len(exist_path_pairs)
         path_values, path_grad = _exist_paths(
             W,
@@ -498,6 +484,16 @@ def combined_inequality_constraints(W, coefficient=None):
     )
     return values, weighted_grad
 
+def _h(W):
+    """Evaluate value and gradient of acyclicity constraint."""
+    E = slin.expm(W * W)  # (Zheng et al. 2018)
+    h = np.trace(E) - d
+    #     # A different formulation, slightly faster at the cost of numerical stability
+    #     M = np.eye(d) + W * W / d  # (Yu et al. 2019)
+    #     E = np.linalg.matrix_power(M, d - 1)
+    #     h = (E.T * M).sum() - d
+    G_h = E.T * W * 2
+    return h, G_h
 def evaluate_prior_values(W, prior_knowledge, w_threshold, compare = False):
     constraint_values = {}
 
@@ -552,7 +548,7 @@ def evaluate_prior_values(W, prior_knowledge, w_threshold, compare = False):
 
     return constraint_values
 
-def loss(W, X):
+def _loss(W, X):
     """Evaluate value and gradient of loss."""
     M = X @ W
     R = X - M
@@ -563,7 +559,7 @@ def loss(W, X):
         return np.inf, np.zeros(W.size, dtype=W.dtype)
     loss = 0.5 * np.log(residual_var).sum() - log_det
     G_loss = -(X.T @ R) / (X.shape[0] * residual_var)
-    G_loss += W * np.linalg.inv(A).T
+    G_loss += np.linalg.inv(A).T
     return loss, G_loss.ravel()
 ####just for test, to delete later #######################################
 
@@ -1050,7 +1046,7 @@ def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, h_
         W = _adj(w)
         loss, G_loss = _loss(W)
         h, G_h = _h(W)
-        c_e, G_e = combined_equality_constraints(W, coefficient=None)
+        c_e = combined_equality_constraints(W, coefficient=None)
         i_value = combined_inequality_constraints(W, coefficient=None)
         tau = np.array([1.0, 1.0], dtype=np.float64)
         tau_e = tau[:c_e.size]
@@ -1153,7 +1149,7 @@ def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, h_
             }
             print("inner_solver:", json.dumps(diagnostics), flush=True)
             w_new = sol.x
-            c_e_new, _ = combined_equality_constraints(_adj(w_new))
+            c_e_new = combined_equality_constraints(_adj(w_new))
             i_value_new = combined_inequality_constraints(_adj(w_new))
             c_i_new = np.maximum(epsilon - i_value_new, 0.0)
             ###############################
@@ -1406,9 +1402,8 @@ if __name__ == '__main__':
         json.dump(results, file, indent=4)
 
     print(f"Results saved to: {output_path}")
-    ##### add constraints check from ground truth and constraints"
+
 #### check gradient of prior knowledge constraints
-# if __name__ == '__main__':
 
     # d = 4
     # W = np.array([
@@ -1449,183 +1444,133 @@ if __name__ == '__main__':
     # print(f"absolute_error = {absolute_error:.3e}")
     # assert absolute_error < 1e-6
     # print("values: ", _exist_paths2(W, w_thres, path_pairs, epsilon=epsilon))
-    # from unittest.mock import patch
 
     # d = 4
     # W = np.array([
-    #     [0.0, 0.6, -0.35, 0.8],
-    #     [0.2, 0.0, 0.5, -0.4],
-    #     [0.35, 0.4, 0.0, 0.7],
-    #     [-0.4, 0.35, 0.2, 0.0],
+    #     [1.0, 2.0, 0.3, 0.8],
+    #     [0.2, 1.0, 0.5, 1.0],
+    #     [0.3, 0.4, 1.0, 0.7],
+    #     [0.4, 0.3, 0.2, 1.0],
     # ], dtype=float)
-    # X_test = np.random.default_rng(0).normal(size=(40, d))
-    # priors = {
-    #     "forbid_edge_pairs": [(0, 1)],
-    #     "forbid_path_pairs": [(1, 2)],
-    #     "forbid_trek_pairs": [(0, 3)],
-    #     "exist_edge_pairs": [(0, 1), (1, 2)],
-    #     "exist_path_pairs": [(0, 2), (1, 3)],
-    #     "exist_trek_pairs": [(0, 1), (2, 3)],
-    # }
-    # # _func expects doubled variables, not W.ravel().
-    # x0 = np.concatenate((np.maximum(W, 0).ravel(),
-    #                      np.maximum(-W, 0).ravel()))
+    # edge_pairs = [(0, 1), (1, 2), (2, 3)]
+    # path_pairs = [(0, 1), (1, 2), (2, 3)]
+    # trek_pairs = [(0, 1), (1, 2), (2, 3)]
+    # coefficient = np.array([1.0, 0.5, 0.8])
+    # w_threshold = 0.3
+    # epsilon = 0.1
+    # sharpness = 50.0
 
-    # class GradientCheckComplete(Exception):
-    #     pass
+    # # Fixed inputs and multipliers: finite differences require a deterministic
+    # # objective. Check the L2 objective in the same doubled coordinates as SciPy.
+    # rng = np.random.default_rng(0)
+    # X = rng.normal(size=(100, d))
+    # X -= X.mean(axis=0, keepdims=True)
+    # forbid_edge_pairs = edge_pairs
+    # forbid_path_pairs = path_pairs
+    # forbid_trek_pairs = trek_pairs
+    # exist_edge_pairs = edge_pairs
+    # exist_path_pairs = path_pairs
+    # exist_trek_pairs = trek_pairs
+    # rho, alpha, lambda1 = 1.0, 0.3, 0.1
+    # prior_count = sum(len(pairs) for pairs in (
+    #     forbid_edge_pairs, forbid_path_pairs, forbid_trek_pairs,
+    #     exist_edge_pairs, exist_path_pairs, exist_trek_pairs,
+    # ))
+    # tau = np.linspace(0.0, 1.0, prior_count)
+    # np.fill_diagonal(W, 0.0)
 
-    # def check_objective(func, initial_weights, bounds):
-    #     # Capture the actual nested _func before running the optimizer.
-    #     cells = dict(zip(func.__code__.co_freevars, func.__closure__))
-    #     cells["alpha"].cell_contents[:] = 0.2
-    #     cells["rho_e"].cell_contents = 1.7
-    #     cells["rho_i"].cell_contents = 2.3
-    #     beta = cells["beta"].cell_contents
-
-    #     for label, multiplier in (("mixed active/inactive", 0.0),
-    #                               ("active", 10.0)):
-    #         # Multipliers stay fixed throughout each numerical check.
-    #         # _func itself must recompute positive_part at each trial point.
-    #         beta[:] = multiplier
-    #         objective = lambda w: func(w)[0]
-    #         gradient = lambda w: func(w)[1]
-    #         analytic = gradient(x0)
-    #         assert analytic.shape == x0.shape
-    #         assert np.all(np.isfinite(analytic))
-    #         absolute_error = check_grad(objective, gradient, x0)
-    #         relative_error = absolute_error / max(1.0, np.linalg.norm(analytic))
-    #         print(f"{loss_name}, {label}: absolute error={absolute_error:.3e}, "
-    #               f"relative error={relative_error:.3e}")
-    #         assert relative_error < 1e-5, "_func gradient check failed"
-    #     raise GradientCheckComplete
-
-    # # Restore the solver automatically; no experiment outputs are written.
-    # for loss_name in ("l2", "likelihood"):
-    #     with patch.dict(notears_linear.__globals__,
-    #                     {"_minimize_finite": check_objective}):
-    #         try:
-    #             notears_linear(X_test, lambda1=0.1, loss_type=loss_name,
-    #                            prior_knowledge=priors, max_iter=1)
-    #         except GradientCheckComplete:
-    #             pass
-    #         else:
-    #             raise AssertionError("The gradient check was not reached")
-
-#     d = 4
-#     W = np.array([
-#         [1.0, 2.0, 0.3, 0.8],
-#         [0.2, 1.0, 0.5, 1.0],
-#         [0.3, 0.4, 1.0, 0.7],
-#         [0.4, 0.3, 0.2, 1.0],
-#     ], dtype=float)
-#     edge_pairs = [(0, 1), (1, 2), (2, 3)]
-#     path_pairs = [(0, 1), (1, 2), (2, 3)]
-#     trek_pairs = [(0, 1)]
-#     w_threshold = 0.3
-
-#     def test_func(w):
-#         c_e, G_e = combined_equality_constraints(w, edge_pairs, path_pairs, trek_pairs)
-#         i_value, i_grad = combined_inequality_constraints(w, w_threshold, edge_pairs, path_pairs, trek_pairs)
-#         epsilon = 1e-1
-#         c_i = epsilon - i_value  
-#         G_i = -i_grad
-#         l = c_i.shape[0]
-#         k = c_e.shape[0]
-#         np.random.seed(0)
-#         beta = np.random.uniform(0, 1, size=l)
-#         rho = 1.0
-#         alpha = np.random.uniform(0, 1, size=k)
-#         z = beta + rho * c_i
-#         positive_part = np.maximum(z, 0.0)
-#         obj = 0.5 * rho * np.sum(c_e**2) + alpha @ c_e + ( 1 / (2 * rho) ) * (np.sum(positive_part ** 2) - np.sum(beta**2)) 
-#         g_obj = G_e.T @ (alpha + rho * c_e) + G_i.T @ positive_part
-#         return obj, g_obj
+    # def _func(W):
+    #     """Evaluate value and gradient of augmented Lagrangian for doubled variables ([2 d^2] array)."""
+    #     W = W.reshape(d, d)
+    #     loss, G_loss = _loss(W, X)
+    #     h, G_h = _h(W)
+    #     c_e = combined_equality_constraints(W, forbid_edge_pairs, forbid_path_pairs, forbid_trek_pairs, coefficient=None)
+    #     i_value = combined_inequality_constraints(W, w_threshold, exist_edge_pairs, exist_path_pairs, exist_trek_pairs, coefficient=None)
+    #     tau_e = tau[:c_e.size]
+    #     tau_i = tau[c_e.size:]
+    #     residual = epsilon - i_value
+    #     c_i = softplus(residual, sharpness)
+    #     c = np.concatenate((c_e.reshape(-1), c_i.reshape(-1)))
+    #     assert tau.shape == c.shape
+    #     _, G_e = combined_equality_constraints(W, forbid_edge_pairs, forbid_path_pairs, forbid_trek_pairs, coefficient=tau_e)
+    #     coefficient = -tau_i * sigmoid(sharpness * residual)
+    #     _, G_i = combined_inequality_constraints(W, w_threshold, exist_edge_pairs, exist_path_pairs, exist_trek_pairs, coefficient=coefficient)
+    #     G_prior = G_e + G_i
+    #     obj = loss + tau @ c + 0.5 * rho * h * h + alpha * h
+    #     G_smooth = G_loss.reshape(-1) + G_prior + (rho * h + alpha) * G_h.reshape(-1)
+    #     return obj, G_smooth
     
-#     def f(w):
-#         residuals, _ = test_func(w.reshape(d, d))
-#         return residuals
+    # def f(w):
+    #     residuals, _ = _func(w)
+    #     return residuals
 
-#     def grad(w):
-#         _, jacobian = test_func(w.reshape(d, d))
-#         return jacobian
+    # def grad(w):
+    #     _, jacobian = _func(w)
+    #     return jacobian
 
-#     x0 = W.reshape(-1)
+    # # Positive split parts put free coordinates inside their bounds. Diagonal
+    # # entries remain zero as in optimization; the smooth extension is checked.
+    # off_diagonal = ~np.eye(d, dtype=bool)
+    # offset = 0.1 * off_diagonal
+    # x0 = W.reshape(-1)
 
-#     print("x0:", x0.shape)
-#     print("f:", np.shape(f(x0)))
-#     print("grad:", grad(x0).shape)
-#     absolute_error = check_grad(f, grad, x0)
-#     gradient_norm = np.linalg.norm(grad(x0))
-#     relative_error = absolute_error / max(1.0, gradient_norm)
+    # print("x0:", x0.shape)
+    # print("f:", np.shape(f(x0)))
+    # print("grad:", grad(x0).shape)
+    # absolute_error = check_grad(f, grad, x0)
+    # gradient_norm = np.linalg.norm(grad(x0))
+    # relative_error = absolute_error / max(1.0, gradient_norm)
 
-#     print("absolute error:", absolute_error)
-#     print("relative error:", relative_error)
+    # print("absolute error:", absolute_error)
+    # print("relative error:", relative_error)
+    # assert np.ndim(f(x0)) == 0
+    # assert grad(x0).shape == x0.shape
+    # assert relative_error < 1e-6, "Combined objective gradient check failed"
 
-#     tests = [
-#         (
-#             "exist_edges",
-#             lambda W: _exist_edges(W, w_threshold, edge_pairs),
-#         ),
-#         (
-#             "exist_paths",
-#             lambda W: _exist_paths(W, w_threshold, path_pairs),
-#         ),
-#         (
-#             "exist_trek",
-#             lambda W: _exist_trek(W, w_threshold, trek_pairs),
-#         ),
-#         (
-#             "forbid_edges",
-#             lambda W: _forbid_edges(W, edge_pairs),
-#         ),
-#         (
-#             "forbid_paths",
-#             lambda W: _forbid_paths(W, path_pairs),
-#         ),
-#         (
-#             "forbid_trek",
-#             lambda W: _forbid_trek(W, trek_pairs),
-#         ),
-#     ]
+    # tests = [
+    #     (
+    #         "exist_edges",
+    #         lambda W: _exist_edges(W, w_threshold, edge_pairs, coefficient=coefficient),
+    #     ),
+    #     (
+    #         "exist_paths",
+    #         lambda W: _exist_paths(W, w_threshold, path_pairs, coefficient=coefficient),
+    #     ),
+    #     (
+    #         "exist_trek",
+    #         lambda W: _exist_trek(W, w_threshold, trek_pairs, coefficient=coefficient),
+    #     ),
+    #     (
+    #         "forbid_edges",
+    #         lambda W: _forbid_edges(W, edge_pairs, coefficient=coefficient),
+    #     ),
+    #     (
+    #         "forbid_paths",
+    #         lambda W: _forbid_paths(W, path_pairs, coefficient=coefficient),
+    #     ),
+    #     (
+    #         "forbid_trek",
+    #         lambda W: _forbid_trek(W, trek_pairs, coefficient=coefficient),
+    #     ),
+    # ]
 
-#     x0 = W.reshape(-1)
+    # x0 = W.reshape(-1)
 
-#     for name, constraint_function in tests:
-#         values, jacobian = constraint_function(W)
+    # for name, constraint_function in tests:
+    #     print("\nTesting:", name)
+    #     def f(w):
+    #         values, _ = constraint_function(w.reshape(d, d))
+    #         print("value shape:", values.shape)
+    #         return coefficient @ values
 
-#         values = np.atleast_1d(values)
-#         jacobian = np.asarray(jacobian)
+    #     def grad(w):
+    #         _, weighted_gradient = constraint_function(w.reshape(d, d))
+    #         print("gradient shape:", weighted_gradient.shape)
+    #         return weighted_gradient.reshape(-1)
 
-#         # Scalar constraints return a one-dimensional gradient.
-#         if jacobian.ndim == 1:
-#             jacobian = jacobian.reshape(1, -1)
+    #     error = check_grad(f, grad, x0)
+    #     relative_error = error / max(1.0, np.linalg.norm(grad(x0)))
 
-#         print("\nTesting:", name)
-#         print("value shape:", values.shape)
-#         print("gradient shape:", jacobian.shape)
-
-#         # check_grad requires a scalar function, so check each component.
-#         for k in range(values.size):
-
-#             def f(w):
-#                 result, _ = constraint_function(w.reshape(d, d))
-#                 return np.atleast_1d(result)[k]
-
-#             def grad(w):
-#                 _, result_gradient = constraint_function(
-#                     w.reshape(d, d)
-#                 )
-
-#                 result_gradient = np.asarray(result_gradient)
-
-#                 if result_gradient.ndim == 1:
-#                     return result_gradient
-
-#                 return result_gradient[k]
-
-#             err = check_grad(f, grad, x0)
-
-#             print(
-#                 f"constraint {k}, "
-#                 f"check_grad difference: {err}"
-#             )
+    #     print(f"\nTesting: {name}")
+    #     print(f"absolute error: {error:.3e}")
+    #     print(f"relative error: {relative_error:.3e}")
