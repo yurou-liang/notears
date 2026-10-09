@@ -36,16 +36,17 @@ wait_for_batch() {
     return 0
 }
 
-NODE_COUNTS=(10 20)
+NODE_COUNTS=(10)
 EPSILONS=(0.1)
+TAU_SETTINGS=("1.0 1.0" "1.0 0.5" "1.0 0.0")
 NOISE_TYPES=(gauss)
 LOSS_TYPE=(both)
 PRIOR_TYPES=(
     # forbid_edge_pairs
     # forbid_path_pairs
     # forbid_trek_pairs
-    # exist_edge_pairs
-    exist_path_pairs
+    exist_edge_pairs
+    # exist_path_pairs
     # exist_trek_pairs
     # mix
 )
@@ -62,48 +63,51 @@ GRAPH_SETTINGS=(
 # EPSILONS=(0.1 0.01 0.001 0.0001)
 cd "${PROJECT_ROOT}"
 
-for seed in {0..9}; do
-# for seed in 0; do
+# for seed in {0..9}; do
+for seed in 0; do
     for d in "${NODE_COUNTS[@]}"; do
-        for graph_setting in "${GRAPH_SETTINGS[@]}"; do
-            graph_type="${graph_setting%%:*}"
-            edge_factor="${graph_setting##*:}"
+        for tau_setting in "${TAU_SETTINGS[@]}"; do
+            read -r tau_correct tau_wrong <<< "${tau_setting}"
+            for graph_setting in "${GRAPH_SETTINGS[@]}"; do
+                graph_type="${graph_setting%%:*}"
+                edge_factor="${graph_setting##*:}"
 
-            for noise_type in "${NOISE_TYPES[@]}"; do
-                for prior_type in "${PRIOR_TYPES[@]}"; do
-                    for epsilon in "${EPSILONS[@]}"; do
-                        echo "Running seed=${seed} d=${d} graph=${graph_type}${edge_factor} noise=${noise_type} prior=${prior_type} rate=${PRIOR_RATE} epsilon=${epsilon}"
+                for noise_type in "${NOISE_TYPES[@]}"; do
+                    for prior_type in "${PRIOR_TYPES[@]}"; do
+                        for epsilon in "${EPSILONS[@]}"; do
+                            echo "Running seed=${seed} d=${d} graph=${graph_type}${edge_factor} noise=${noise_type} prior=${prior_type} rate=${PRIOR_RATE} epsilon=${epsilon}"
 
-                        output_dir="${PROJECT_ROOT}/linear_${prior_type}"
-                        log_dir="${output_dir}/log"
-                        result_stem="linear_${prior_type}_${graph_type}${edge_factor}_d${d}_${noise_type}_rate${PRIOR_RATE}_epsilon${epsilon}_seed${seed}_twopenalty_compare"
-                        result_file="${output_dir}/${result_stem}.json"
-                        log_file="${log_dir}/${result_stem}.log"
-                        mkdir -p "${output_dir}" "${log_dir}"
+                            output_dir="${PROJECT_ROOT}/linear_${prior_type}"
+                            log_dir="${output_dir}/log"
+                            result_stem="linear_${prior_type}_${graph_type}${edge_factor}_d${d}_${noise_type}_rate${PRIOR_RATE}_epsilon${epsilon}_seed${seed}_tau${tau_correct}_${tau_wrong}"
+                            result_file="${output_dir}/${result_stem}.json"
+                            log_file="${log_dir}/${result_stem}.log"
+                            mkdir -p "${output_dir}" "${log_dir}"
 
-                        (
-                            "${PYTHON_BIN}" -u -m prior_notears.linear \
-                                --seed "${seed}" \
-                                --num_nodes "${d}" \
-                                --num_edges_per_node "${edge_factor}" \
-                                --graph_type "${graph_type}" \
-                                --loss_type "${LOSS_TYPE}" \
-                                --noise "${noise_type}" \
-                                --prior_type "${prior_type}" \
-                                --prior_rate "${PRIOR_RATE}" \
-                                --epsilon "${epsilon}" \
-                                --compare \
-                                > "${log_file}" 2>&1
+                            (
+                                "${PYTHON_BIN}" -u -m prior_notears.linear \
+                                    --seed "${seed}" \
+                                    --num_nodes "${d}" \
+                                    --num_edges_per_node "${edge_factor}" \
+                                    --graph_type "${graph_type}" \
+                                    --loss_type "${LOSS_TYPE}" \
+                                    --noise "${noise_type}" \
+                                    --prior_type "${prior_type}" \
+                                    --prior_rate "${PRIOR_RATE}" \
+                                    --epsilon "${epsilon}" \
+                                    --tau "${tau_correct}" "${tau_wrong}" \
+                                    > "${log_file}" 2>&1
 
-                            if [[ ! -f "${result_file}" ]]; then
-                                echo "Expected result file was not created: ${result_file}" >&2
-                                exit 1
+                                if [[ ! -f "${result_file}" ]]; then
+                                    echo "Expected result file was not created: ${result_file}" >&2
+                                    exit 1
+                                fi
+                            ) &
+                            pids+=("$!")
+                            if (( ${#pids[@]} >= MAX_JOBS )); then
+                                wait_for_batch
                             fi
-                        ) &
-                        pids+=("$!")
-                        if (( ${#pids[@]} >= MAX_JOBS )); then
-                            wait_for_batch
-                        fi
+                        done
                     done
                 done
             done

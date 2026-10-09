@@ -494,6 +494,13 @@ def _h(W):
     #     h = (E.T * M).sum() - d
     G_h = E.T * W * 2
     return h, G_h
+
+def _p0(W):
+    """Evaluate value and gradient of prior distribution of W."""
+    value = 0.5*np.sum(W ** 2)
+    grad = W
+    return value, grad.reshape(-1)
+
 def evaluate_prior_values(W, prior_knowledge, w_threshold, compare = False):
     constraint_values = {}
 
@@ -548,28 +555,35 @@ def evaluate_prior_values(W, prior_knowledge, w_threshold, compare = False):
 
     return constraint_values
 
-def _loss(W, X):
+def _loss(W, X, loss_type):
     """Evaluate value and gradient of loss."""
     M = X @ W
-    R = X - M
-    residual_var = np.mean(R ** 2, axis=0)
-    A = np.eye(W.shape[0]) - W
-    det_sign, log_det = np.linalg.slogdet(A)
-    if det_sign == 0 or np.any(residual_var <= 0):
-        return np.inf, np.zeros(W.size, dtype=W.dtype)
-    loss = 0.5 * np.log(residual_var).sum() - log_det
-    G_loss = -(X.T @ R) / (X.shape[0] * residual_var)
-    G_loss += np.linalg.inv(A).T
-    return loss, G_loss.ravel()
+    if loss_type == 'l2':
+        R = X - M
+        loss = 0.5 / X.shape[0] * (R ** 2).sum()
+        G_loss = - 1.0 / X.shape[0] * X.T @ R
+        return loss, G_loss
+    elif loss_type == 'likelihood':
+        R = X - M
+        residual_var = np.mean(R ** 2, axis=0)
+        A = np.eye(W.shape[0]) - W
+        det_sign, log_det = np.linalg.slogdet(A)
+        if det_sign == 0 or np.any(residual_var <= 0):
+            return np.inf, np.zeros(W.size, dtype=W.dtype)
+        loss = 0.5 * np.log(residual_var).sum() - log_det
+        G_loss = -(X.T @ R) / (X.shape[0] * residual_var)
+        G_loss += np.linalg.inv(A).T
+        return loss, G_loss.ravel()
 ####just for test, to delete later #######################################
 
-def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, h_tol=1e-8, rho_max=1e+16, w_threshold=0.3, sharpness=50.0, epsilon=1e-1, compare = False):
+def notears_linear(X, lambda1, loss_type, tau, prior_knowledge=None, max_iter=100, h_tol=1e-8, rho_max=1e+16, w_threshold=0.3, sharpness=50.0, epsilon=1e-1, compare = False):
     """Solve min_W L(W; X) + lambda1 ‖W‖_1 s.t. h(W) = 0 using augmented Lagrangian.
 
     Args:
         X (np.ndarray): [n, d] sample matrix
         lambda1 (float): l1 penalty parameter
         loss_type (str): l2, likelihood, logistic, poisson
+        tau (float): trust
         prior_knowledge (dict): prior knowledge
         max_iter (int): max num of dual ascent steps
         h_tol (float): exit if h(W) <= h_tol
@@ -591,6 +605,8 @@ def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, h_
     exist_edge_pairs = prior_knowledge.get("exist_edge_pairs", [])
     exist_path_pairs = prior_knowledge.get("exist_path_pairs", [])
     exist_trek_pairs = prior_knowledge.get("exist_trek_pairs", [])
+
+    tau = np.array(tau, dtype=np.float64)
 
     def _loss(W):
         """Evaluate value and gradient of loss."""
@@ -632,6 +648,12 @@ def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, h_
         #     h = (E.T * M).sum() - d
         G_h = E.T * W * 2
         return h, G_h
+
+    def _p0(W):
+        """Evaluate value and gradient of prior distribution of W."""
+        value = 0.5*np.sum(W ** 2)
+        grad = W
+        return value, grad.reshape(-1)
 
     def _forbid_edges(W, edge_pairs, coefficient=None):
         """forbid edges from the list of index pairs.
@@ -1048,7 +1070,6 @@ def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, h_
         h, G_h = _h(W)
         c_e = combined_equality_constraints(W, coefficient=None)
         i_value = combined_inequality_constraints(W, coefficient=None)
-        tau = np.array([1.0, 1.0], dtype=np.float64)
         tau_e = tau[:c_e.size]
         tau_i = tau[c_e.size:]
         residual = epsilon - i_value
@@ -1058,8 +1079,9 @@ def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, h_
         coefficient = -tau_i * sigmoid(sharpness * residual)
         _, G_i = combined_inequality_constraints(W, coefficient=coefficient)
         G_prior = G_e + G_i
-        obj = loss + tau @ c + 0.5 * rho * h * h + alpha * h + lambda1 * w.sum()
-        G_smooth = G_loss.reshape(-1) + G_prior + (rho * h + alpha) * G_h.reshape(-1)
+        p0, G_p0 = _p0(W)
+        obj = loss + p0 + tau @ c + 0.5 * rho * h * h + alpha * h + lambda1 * w.sum()
+        G_smooth = G_loss.reshape(-1) + G_p0 + G_prior + (rho * h + alpha) * G_h.reshape(-1)
         g_obj = np.concatenate((G_smooth + lambda1, - G_smooth + lambda1), axis=None)
         return obj, g_obj
 
@@ -1176,8 +1198,8 @@ def notears_linear(X, lambda1, loss_type, prior_knowledge=None, max_iter=100, h_
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(prog='linear NOTEARS with prior knowledge',)
 
-    parser.add_argument('-s', '--seed', dest='s',  default=42, type=int)
-    parser.add_argument('-d', '--num_nodes', dest='d', default=4, type=int)
+    parser.add_argument('-s', '--seed', dest='s',  default=0, type=int)
+    parser.add_argument('-d', '--num_nodes', dest='d', default=10, type=int)
     parser.add_argument('-e', '--num_edges_per_node', dest='e', default=1, type=int)
     parser.add_argument('-g', '--graph_type', dest='g', default="ER", type=str)
     parser.add_argument('-l', '--loss_type', dest='l', default="both", type=str)
@@ -1187,6 +1209,7 @@ if __name__ == '__main__':
     parser.add_argument('-t', '--w_threshold', dest='t', default=0.3, type=float)
     parser.add_argument('-ep', '--epsilon', dest='ep', default=1e-1, type=float)
     parser.add_argument('-c', '--compare', dest='c', action='store_true', default=False)
+    parser.add_argument('-tau', '--tau', dest='tau', default=[1.0, 1.0], nargs='+', type=float)
     args = parser.parse_args()
 
     from prior_notears import utils
@@ -1196,9 +1219,9 @@ if __name__ == '__main__':
     print("B_true:", B_true)
     W_true = utils.simulate_parameter(B_true)
     if not args.c:
-        filename = f"linear_{args.p}_{graph_type}{args.e}_d{d}_{sem_type}_rate{args.r}_epsilon{args.ep}_seed{args.s}_twopenalty.json"
+        filename = f"linear_{args.p}_{graph_type}{args.e}_d{d}_{sem_type}_rate{args.r}_epsilon{args.ep}_seed{args.s}_tau{args.tau[0]}_{args.tau[1]}.json"
     else:
-        filename = f"linear_{args.p}_{graph_type}{args.e}_d{d}_{sem_type}_rate{args.r}_epsilon10_seed{args.s}_twopenalty_compare.json"
+        filename = f"linear_{args.p}_{graph_type}{args.e}_d{d}_{sem_type}_rate{args.r}_epsilon10_seed{args.s}_tau{args.tau[0]}_{args.tau[1]}_compare.json"
 
     noise_scale = np.exp(np.random.uniform(np.log(0.5), np.log(2.0), size=d,))
     X = utils.simulate_linear_sem(W_true, n, sem_type, noise_scale)
@@ -1212,6 +1235,8 @@ if __name__ == '__main__':
         start_time = time.perf_counter()
         W_est_no_prior_ll = linear.notears_linear(X_std, lambda1=0.1, loss_type="likelihood", w_threshold=args.t)
         running_time_no_prior_ll = time.perf_counter() - start_time
+        h_est_no_prior_ll, _ = _h(W_est_no_prior_ll)
+        loss_no_prior_ll, _ = _loss(W_est_no_prior_ll, X_std, "likelihood")
         try:
             if not utils.is_dag(W_est_no_prior_ll):
                 raise ValueError("Estimated graph contains a directed cycle")
@@ -1229,33 +1254,36 @@ if __name__ == '__main__':
         else:
             evaluation_status["no_prior_ll"] = {"status": "completed"}
 
-        if 'exist' in args.p:
-            prior_knowledge_ll = utils.generate_prior_knowledge(
-                B_true,
-                prior_rate=args.r,
-                prior_type=args.p,
-            )
-        elif 'forbid' in args.p:
-            prior_knowledge_ll = utils.generate_unsatisfed_prior_knowledge(
-                B_true,
-                B_est=W_est_no_prior_ll,
-                prior_rate=args.r,
-                prior_type=args.p,
-            )
-        elif args.p=='mix':
-            prior_knowledge_ll = utils.generate_mixed_prior_knowledge(
-                B_true,
-                B_est=W_est_no_prior_ll,
-                prior_rate=args.r,
-                prior_type=args.p,
-            )
+        # if 'exist' in args.p:
+        #     prior_knowledge_ll = utils.generate_prior_knowledge(
+        #         B_true,
+        #         prior_rate=args.r,
+        #         prior_type=args.p,
+        #     )
+        # elif 'forbid' in args.p:
+        #     prior_knowledge_ll = utils.generate_unsatisfed_prior_knowledge(
+        #         B_true,
+        #         B_est=W_est_no_prior_ll,
+        #         prior_rate=args.r,
+        #         prior_type=args.p,
+        #     )
+        # elif args.p=='mix':
+        #     prior_knowledge_ll = utils.generate_mixed_prior_knowledge(
+        #         B_true,
+        #         B_est=W_est_no_prior_ll,
+        #         prior_rate=args.r,
+        #         prior_type=args.p,
+        #     )
+        prior_knowledge_ll = {"exist_edge_pairs": [(7, 0), (7, 2)]}
         print("prior_knowledge_ll:", prior_knowledge_ll)
         constraint_values_no_prior_ll = evaluate_prior_values(W_est_no_prior_ll, prior_knowledge_ll, args.t)
         satisfied_no_prior_ll, satisfied_percentage_no_prior_ll = utils.evaluate_prior_knowledge(W_est_no_prior_ll, prior_knowledge_ll)
         print(f'>>> Evaluation with prior knowledge and likelihood loss <<<')
         start_time = time.perf_counter()
-        W_est_prior_ll, sol_success_ll = notears_linear(X_std, lambda1=0.1, loss_type="likelihood", prior_knowledge=prior_knowledge_ll, w_threshold=args.t, epsilon=args.ep, compare=args.c,)
+        W_est_prior_ll, sol_success_ll = notears_linear(X_std, lambda1=0.1, loss_type="likelihood", tau=args.tau, prior_knowledge=prior_knowledge_ll, w_threshold=args.t, epsilon=args.ep, compare=args.c,)
         running_time_prior_ll = time.perf_counter() - start_time
+        h_est_prior_ll, _ = _h(W_est_prior_ll)
+        loss_prior_ll, _ = _loss(W_est_prior_ll, X_std, "likelihood")
         constraint_values_prior_ll = evaluate_prior_values(W_est_prior_ll, prior_knowledge_ll, args.t, args.c)
         satisfied_prior_ll, satisfied_percentage_prior_ll = utils.evaluate_prior_knowledge(W_est_prior_ll, prior_knowledge_ll)
         try:
@@ -1280,6 +1308,8 @@ if __name__ == '__main__':
             start_time = time.perf_counter()
             W_est_no_prior_l2 = linear.notears_linear(X_std, lambda1=0.1, loss_type="l2", w_threshold=args.t)
             running_time_no_prior_l2 = time.perf_counter() - start_time
+            h_est_no_prior_l2, _ = _h(W_est_no_prior_l2)
+            loss_no_prior_l2, _ = _loss(W_est_no_prior_l2, X_std, "l2")
             try:
                 if not utils.is_dag(W_est_no_prior_l2):
                     raise ValueError("Estimated graph contains a directed cycle")
@@ -1297,33 +1327,36 @@ if __name__ == '__main__':
             else:
                 evaluation_status["no_prior_l2"] = {"status": "completed"}
 
-            if 'exist' in args.p:
-                prior_knowledge_l2 = utils.generate_prior_knowledge(
-                    B_true,
-                    prior_rate=args.r,
-                    prior_type=args.p,
-                )
-            elif 'forbid' in args.p:
-                prior_knowledge_l2 = utils.generate_unsatisfed_prior_knowledge(
-                    B_true,
-                    B_est=W_est_no_prior_l2,
-                    prior_rate=args.r,
-                    prior_type=args.p,
-                )
-            elif args.p=='mix':
-                prior_knowledge_l2 = utils.generate_mixed_prior_knowledge(
-                    B_true,
-                    B_est=W_est_no_prior_l2,
-                    prior_rate=args.r,
-                    prior_type=args.p,
-                )
+            # if 'exist' in args.p:
+            #     prior_knowledge_l2 = utils.generate_prior_knowledge(
+            #         B_true,
+            #         prior_rate=args.r,
+            #         prior_type=args.p,
+            #     )
+            # elif 'forbid' in args.p:
+            #     prior_knowledge_l2 = utils.generate_unsatisfed_prior_knowledge(
+            #         B_true,
+            #         B_est=W_est_no_prior_l2,
+            #         prior_rate=args.r,
+            #         prior_type=args.p,
+            #     )
+            # elif args.p=='mix':
+            #     prior_knowledge_l2 = utils.generate_mixed_prior_knowledge(
+            #         B_true,
+            #         B_est=W_est_no_prior_l2,
+            #         prior_rate=args.r,
+            #         prior_type=args.p,
+            #     )
+            prior_knowledge_l2 = {"exist_edge_pairs": [(7, 0), (7, 2)]}
             print("prior_knowledge_l2:", prior_knowledge_l2)
             constraint_values_no_prior_l2 = evaluate_prior_values(W_est_no_prior_l2, prior_knowledge_l2, args.t)
             satisfied_no_prior_l2, satisfied_percentage_no_prior_l2 = utils.evaluate_prior_knowledge(W_est_no_prior_l2, prior_knowledge_l2)
             print(f'>>> Evaluation with prior knowledge and l2 loss <<<')
             start_time = time.perf_counter()
-            W_est_prior_l2, sol_success_l2 = notears_linear(X_std, lambda1=0.1, loss_type="l2", prior_knowledge=prior_knowledge_l2, w_threshold=args.t, epsilon=args.ep, compare=args.c)
+            W_est_prior_l2, sol_success_l2 = notears_linear(X_std, lambda1=0.1, loss_type="l2", tau=args.tau, prior_knowledge=prior_knowledge_l2, w_threshold=args.t, epsilon=args.ep, compare=args.c)
             running_time_prior_l2 = time.perf_counter() - start_time
+            h_est_prior_l2, _ = _h(W_est_prior_l2)
+            loss_prior_l2, _ = _loss(W_est_prior_l2, X_std, "l2")
             constraint_values_prior_l2 = evaluate_prior_values(W_est_prior_l2, prior_knowledge_l2, args.t, args.c)
             satisfied_prior_l2, satisfied_percentage_prior_l2 = utils.evaluate_prior_knowledge(W_est_prior_l2, prior_knowledge_l2)
             try:
@@ -1359,10 +1392,18 @@ if __name__ == '__main__':
         "W_est_prior_l2",
         "W_est_no_prior_ll",
         "W_est_no_prior_l2",
+        "h_est_prior_ll",
+        "h_est_prior_l2",
+        "h_est_no_prior_ll",
+        "h_est_no_prior_l2",
         "acc_prior_ll",
         "acc_prior_l2",
         "acc_no_prior_ll",
         "acc_no_prior_l2",
+        "loss_prior_ll",
+        "loss_prior_l2",
+        "loss_no_prior_ll",
+        "loss_no_prior_l2",
         "constraint_values_prior_ll",
         "constraint_values_prior_l2",
         "constraint_values_no_prior_ll",
@@ -1496,8 +1537,9 @@ if __name__ == '__main__':
     #     coefficient = -tau_i * sigmoid(sharpness * residual)
     #     _, G_i = combined_inequality_constraints(W, w_threshold, exist_edge_pairs, exist_path_pairs, exist_trek_pairs, coefficient=coefficient)
     #     G_prior = G_e + G_i
-    #     obj = loss + tau @ c + 0.5 * rho * h * h + alpha * h
-    #     G_smooth = G_loss.reshape(-1) + G_prior + (rho * h + alpha) * G_h.reshape(-1)
+    #     p0, G_p0 = _p0(W)
+    #     obj = loss + p0 + tau @ c + 0.5 * rho * h * h + alpha * h
+    #     G_smooth = G_loss.reshape(-1) + G_p0 + G_prior + (rho * h + alpha) * G_h.reshape(-1)
     #     return obj, G_smooth
     
     # def f(w):
