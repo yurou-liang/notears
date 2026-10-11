@@ -1,8 +1,6 @@
 import torch
 
 torch.set_default_dtype(torch.float64)
-
-torch.set_default_dtype(torch.float64)
 torch.manual_seed(0)
 
 d = 6
@@ -12,16 +10,26 @@ H = A.T @ A + torch.eye(d)
 w = torch.randn(d, requires_grad=True)
 g = torch.randn(d)
 
-def F(w):
-    return 0.5 * w @ H @ w
+def F(W):
+    return 0.5 * W @ H @ W
 
-def hvp(direction):
-    # Rebuild the graph for each call.
-    grad_F, = torch.autograd.grad(F(w), w, create_graph=True)
-    product, = torch.autograd.grad(
-        (grad_F * direction.detach()).sum(), w
-    )
-    return product.detach()
+def make_hvp_operator(objective, point):
+    """Create a flat-vector HVP operator at a fixed point."""
+    fixed_point = point.detach().clone()
+
+    def operator(v):
+        W = fixed_point.clone().requires_grad_(True)
+        value = objective(W)
+
+        gradient, = torch.autograd.grad(
+            value, W, create_graph=True
+        )
+        Hv, = torch.autograd.grad(
+            (gradient * v.detach().reshape_as(W)).sum(), W
+        )
+        return Hv.detach().reshape(-1)
+
+    return operator
 
 def cg(operator, rhs, tol=1e-12, max_iter=20):
     v = torch.zeros_like(rhs)
@@ -53,14 +61,15 @@ def cg(operator, rhs, tol=1e-12, max_iter=20):
     raise RuntimeError("CG did not converge")
 
 # First validate HVP independently.
+operator = make_hvp_operator(F, w)
 direction = torch.randn(d)
-assert torch.allclose(hvp(direction), H @ direction)
+assert torch.allclose(operator(direction), H @ direction)
 
 # Then validate the CG solution.
-v, iterations = cg(hvp, g)
+v, iterations = cg(operator, g.reshape(-1))
 exact = torch.linalg.solve(H, g)
 relative_residual = (
-    torch.linalg.vector_norm(hvp(v) - g)
+    torch.linalg.vector_norm(operator(v) - g)
     / torch.linalg.vector_norm(g)
 )
 

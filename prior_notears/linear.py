@@ -13,6 +13,9 @@ from sklearn.preprocessing import StandardScaler
 from Varsortability.src.varsortability import varsortability
 import time
 import traceback
+import torch
+import torch.nn.functional as functional
+import torch_linear
 
 def softplus(x, sharpness=50.0):
     return np.logaddexp(0.0, sharpness * x) / sharpness
@@ -126,22 +129,22 @@ def _forbid_edges(W, edge_pairs, coefficient=None):
         grad_W[i, j] += coefficient[k] * 2.0 * W[i, j]
     return e, grad_W.reshape(-1)
 
-def _exist_edges(W, w_thres, edge_pairs, coefficient=None):
-    """Return edge values and their coefficient-weighted gradient."""
-    if len(edge_pairs) == 0:
-        if coefficient is None:
-            return np.empty(0)
-        return np.empty(0), np.zeros(W.size)
-    values = np.array([W[i, j] ** 2 - w_thres ** 2 for i, j in edge_pairs])
-    if coefficient is None:
-        return values
-    coefficient = np.asarray(coefficient, dtype=float)
-    if coefficient.shape != (len(edge_pairs),):
-        raise ValueError("Provide one coefficient per edge pair")
-    grad_W = np.zeros_like(W)
-    for k, (i, j) in enumerate(edge_pairs):
-        grad_W[i, j] += coefficient[k] * 2.0 * W[i, j]
-    return values, grad_W.reshape(-1)
+# def _exist_edges(W, w_thres, edge_pairs, coefficient=None):
+#     """Return edge values and their coefficient-weighted gradient."""
+#     if len(edge_pairs) == 0:
+#         if coefficient is None:
+#             return np.empty(0)
+#         return np.empty(0), np.zeros(W.size)
+#     values = np.array([W[i, j] ** 2 - w_thres ** 2 for i, j in edge_pairs])
+#     if coefficient is None:
+#         return values
+#     coefficient = np.asarray(coefficient, dtype=float)
+#     if coefficient.shape != (len(edge_pairs),):
+#         raise ValueError("Provide one coefficient per edge pair")
+#     grad_W = np.zeros_like(W)
+#     for k, (i, j) in enumerate(edge_pairs):
+#         grad_W[i, j] += coefficient[k] * 2.0 * W[i, j]
+#     return values, grad_W.reshape(-1)
 
 def _forbid_paths(W, path_pairs, coefficient=None):
     """Return path penalties and optionally their weighted gradient."""
@@ -500,6 +503,26 @@ def _p0(W):
     value = 0.5*np.sum(W ** 2)
     grad = W
     return value, grad.reshape(-1)
+# def _loss(W, X, loss_type):
+#     """Evaluate value and gradient of loss."""
+#     M = X @ W
+#     if loss_type == 'l2':
+#         R = X - M
+#         loss = 0.5 / X.shape[0] * (R ** 2).sum()
+#         G_loss = - 1.0 / X.shape[0] * X.T @ R
+#         return loss, G_loss
+#     elif loss_type == 'likelihood':
+#         R = X - M
+#         residual_var = np.mean(R ** 2, axis=0)
+#         A = np.eye(W.shape[0]) - W
+#         det_sign, log_det = np.linalg.slogdet(A)
+#         if det_sign == 0 or np.any(residual_var <= 0):
+#             return np.inf, np.zeros(W.size, dtype=W.dtype)
+#         loss = 0.5 * np.log(residual_var).sum() - log_det
+#         G_loss = -(X.T @ R) / (X.shape[0] * residual_var)
+#         G_loss += np.linalg.inv(A).T
+#         return loss, G_loss.ravel()
+####just for test, to delete later #######################################
 
 def evaluate_prior_values(W, prior_knowledge, w_threshold, compare = False):
     constraint_values = {}
@@ -555,26 +578,67 @@ def evaluate_prior_values(W, prior_knowledge, w_threshold, compare = False):
 
     return constraint_values
 
+def exist_edges(W, edge_pairs, w_thres=0.3,
+                      epsilon=0.1, sharpness=50.0):
+    if len(edge_pairs) == 0:
+        return W.new_empty(0)
+
+    values = torch.stack([W[i, j].square() - w_thres**2 for i, j in edge_pairs])
+
+    return functional.softplus(
+        epsilon - values,
+        beta=sharpness,
+        threshold=float("inf"),
+    )
+
 def _loss(W, X, loss_type):
     """Evaluate value and gradient of loss."""
-    M = X @ W
+    d = W.shape[0]
+    residual = X - X @ W
     if loss_type == 'l2':
-        R = X - M
-        loss = 0.5 / X.shape[0] * (R ** 2).sum()
-        G_loss = - 1.0 / X.shape[0] * X.T @ R
-        return loss, G_loss
+        loss = 0.5 * residual.square().sum() / X.shape[0]
     elif loss_type == 'likelihood':
-        R = X - M
-        residual_var = np.mean(R ** 2, axis=0)
-        A = np.eye(W.shape[0]) - W
-        det_sign, log_det = np.linalg.slogdet(A)
-        if det_sign == 0 or np.any(residual_var <= 0):
-            return np.inf, np.zeros(W.size, dtype=W.dtype)
-        loss = 0.5 * np.log(residual_var).sum() - log_det
-        G_loss = -(X.T @ R) / (X.shape[0] * residual_var)
-        G_loss += np.linalg.inv(A).T
-        return loss, G_loss.ravel()
-####just for test, to delete later #######################################
+        residual_var = residual.square().mean(dim=0)
+        identity = torch.eye(d, dtype=W.dtype, device=W.device)
+        sign, log_abs_det = torch.linalg.slogdet(identity - W)
+
+        if sign.detach().item() == 0 or torch.any(
+            residual_var.detach() <= 0
+        ).item():
+            raise ValueError("Likelihood is undefined at this W")
+
+        loss = 0.5 * residual_var.log().sum() - log_abs_det
+    return loss
+
+def objective_without_prior(
+    W, X, tau, k, pairs, prior_type, loss_type,
+    alpha, rho, lambda1=0.1,
+    w_thres=0.3, epsilon=0.1, sharpness=50.0,
+):
+    data_loss = _loss(W, X, loss_type)
+    p0 = 0.5 * W.square().sum()
+    sparsity = lambda1 * W.abs().sum()
+
+
+    C = exist_edges(
+        W, pairs,
+        w_thres=w_thres,
+        epsilon=epsilon,
+        sharpness=sharpness,
+    )
+
+    if tau.shape != C.shape:
+        raise ValueError("Provide one trust value per prior")
+    if not 0 <= k < C.numel():
+        raise ValueError("Invalid prior index")
+
+    prior_loss = tau @ C - tau[k] * C[k]
+    h = torch.trace(torch.matrix_exp(W.square())) - W.shape[0]
+
+    return (
+        data_loss + p0 + sparsity + prior_loss
+        + alpha * h + 0.5 * rho * h.square()
+    )
 
 def notears_linear(X, lambda1, loss_type, tau, prior_knowledge=None, max_iter=100, h_tol=1e-8, rho_max=1e+16, w_threshold=0.3, sharpness=50.0, epsilon=1e-1, compare = False):
     """Solve min_W L(W; X) + lambda1 ‖W‖_1 s.t. h(W) = 0 using augmented Lagrangian.
@@ -1127,6 +1191,23 @@ def notears_linear(X, lambda1, loss_type, tau, prior_knowledge=None, max_iter=10
 
         return l2_violation_i, max_violation_i, l2_violation_e, max_violation_e
 
+    def solve_prior_direction(objective_without_k, constraint, k, W_star):
+        # Gradient of the unweighted kth constraint.
+        W = W_star.detach().clone().requires_grad_(True)
+        C_k = constraint(W)[k]  # Must return a scalar.
+        g_k, = torch.autograd.grad(C_k, W)
+        g_k = g_k.detach().reshape(-1)
+
+        operator = torch_linear.make_hvp_operator(objective_without_k, W_star)
+        v_k, iterations = torch_linear.cg(operator, g_k)
+
+        relative_residual = (
+            torch.linalg.vector_norm(operator(v_k) - g_k)
+            / (torch.linalg.vector_norm(g_k) + 1e-12)
+        )
+
+        return v_k.reshape_as(W_star), iterations, relative_residual
+    
     n, d = X.shape
     # w_est = np.random.uniform(0.0, 0.1, size=2 * d * d)  # double w_est into (w_pos, w_neg)
     w_est, rho, alpha, h = np.zeros(2 * d * d), 1.0, 0.0, np.inf
@@ -1178,6 +1259,32 @@ def notears_linear(X, lambda1, loss_type, tau, prior_knowledge=None, max_iter=10
             print("equality constraints:", c_e_new, flush=True)
             print("inequality constraints:", c_i_new, flush=True)
             ###############################
+            W_star = torch.tensor(_adj(w_new), dtype=torch.float64)
+            X_t = torch.as_tensor(X, dtype=W_star.dtype)
+            tau_t = torch.as_tensor(tau, dtype=W_star.dtype)
+
+            def objective_without_k(W):
+                return objective_without_prior(
+                    W, X_t, tau_t, k, exist_edge_pairs, prior_type, loss_type,
+                    alpha, rho,
+                    lambda1=lambda1,
+                    w_thres=w_threshold,
+                    epsilon=epsilon,
+                    sharpness=sharpness,
+                )
+
+            def constraint_k(W):
+                return exist_edges(
+                    W, exist_edge_pairs,
+                    w_thres=w_threshold,
+                    epsilon=epsilon,
+                    sharpness=sharpness,
+                )[k]
+
+            v_k, iterations, relative_residual = solve_prior_direction(
+                objective_without_k, constraint_k, W_star
+            )
+            
             h_new, _ = _h(_adj(w_new))
             if h_new > 0.25 * h:
                 rho *= 10
