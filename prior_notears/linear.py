@@ -15,7 +15,7 @@ import time
 import traceback
 import torch
 import torch.nn.functional as functional
-import torch_linear
+from prior_notears import torch_linear
 
 def softplus(x, sharpness=50.0):
     return np.logaddexp(0.0, sharpness * x) / sharpness
@@ -129,22 +129,22 @@ def _forbid_edges(W, edge_pairs, coefficient=None):
         grad_W[i, j] += coefficient[k] * 2.0 * W[i, j]
     return e, grad_W.reshape(-1)
 
-# def _exist_edges(W, w_thres, edge_pairs, coefficient=None):
-#     """Return edge values and their coefficient-weighted gradient."""
-#     if len(edge_pairs) == 0:
-#         if coefficient is None:
-#             return np.empty(0)
-#         return np.empty(0), np.zeros(W.size)
-#     values = np.array([W[i, j] ** 2 - w_thres ** 2 for i, j in edge_pairs])
-#     if coefficient is None:
-#         return values
-#     coefficient = np.asarray(coefficient, dtype=float)
-#     if coefficient.shape != (len(edge_pairs),):
-#         raise ValueError("Provide one coefficient per edge pair")
-#     grad_W = np.zeros_like(W)
-#     for k, (i, j) in enumerate(edge_pairs):
-#         grad_W[i, j] += coefficient[k] * 2.0 * W[i, j]
-#     return values, grad_W.reshape(-1)
+def _exist_edges(W, w_thres, edge_pairs, coefficient=None):
+    """Return edge values and their coefficient-weighted gradient."""
+    if len(edge_pairs) == 0:
+        if coefficient is None:
+            return np.empty(0)
+        return np.empty(0), np.zeros(W.size)
+    values = np.array([W[i, j] ** 2 - w_thres ** 2 for i, j in edge_pairs])
+    if coefficient is None:
+        return values
+    coefficient = np.asarray(coefficient, dtype=float)
+    if coefficient.shape != (len(edge_pairs),):
+        raise ValueError("Provide one coefficient per edge pair")
+    grad_W = np.zeros_like(W)
+    for k, (i, j) in enumerate(edge_pairs):
+        grad_W[i, j] += coefficient[k] * 2.0 * W[i, j]
+    return values, grad_W.reshape(-1)
 
 def _forbid_paths(W, path_pairs, coefficient=None):
     """Return path penalties and optionally their weighted gradient."""
@@ -578,7 +578,7 @@ def evaluate_prior_values(W, prior_knowledge, w_threshold, compare = False):
 
     return constraint_values
 
-def exist_edges(W, edge_pairs, w_thres=0.3,
+def exist_edges_loss(W, edge_pairs, w_thres=0.3,
                       epsilon=0.1, sharpness=50.0):
     if len(edge_pairs) == 0:
         return W.new_empty(0)
@@ -610,6 +610,25 @@ def _loss(W, X, loss_type):
         loss = 0.5 * residual_var.log().sum() - log_abs_det
     return loss
 
+def loss(W, X, loss_type):
+    """Evaluate value and gradient of loss."""
+    d = W.shape[0]
+    residual = X - X @ W
+    if loss_type == 'l2':
+        loss = 0.5 * residual.square().sum() / X.shape[0]
+    elif loss_type == 'likelihood':
+        residual_var = residual.square().mean(dim=0)
+        identity = torch.eye(d, dtype=W.dtype, device=W.device)
+        sign, log_abs_det = torch.linalg.slogdet(identity - W)
+
+        if sign.detach().item() == 0 or torch.any(
+            residual_var.detach() <= 0
+        ).item():
+            raise ValueError("Likelihood is undefined at this W")
+
+        loss = 0.5 * residual_var.log().sum() - log_abs_det
+    return loss
+
 def objective_without_prior(
     W, X, tau, k, pairs, prior_type, loss_type,
     alpha, rho, lambda1=0.1,
@@ -620,7 +639,7 @@ def objective_without_prior(
     sparsity = lambda1 * W.abs().sum()
 
 
-    C = exist_edges(
+    C = exist_edges_loss(
         W, pairs,
         w_thres=w_thres,
         epsilon=epsilon,
@@ -640,7 +659,28 @@ def objective_without_prior(
         + alpha * h + 0.5 * rho * h.square()
     )
 
-def notears_linear(X, lambda1, loss_type, tau, prior_knowledge=None, max_iter=100, h_tol=1e-8, rho_max=1e+16, w_threshold=0.3, sharpness=50.0, epsilon=1e-1, compare = False):
+def compute_hessian(objective, W_star):
+    """Explicit autograd Hessian over off-diagonal entries."""
+    W_fixed = W_star.detach().clone()
+    d = W_fixed.shape[0]
+
+    mask = ~torch.eye(d, dtype=torch.bool, device=W_fixed.device)
+    rows, cols = mask.nonzero(as_tuple=True)
+    x_star = W_fixed[rows, cols].clone().requires_grad_(True)
+
+    def unpack(x):
+        return W_fixed.index_put((rows, cols), x)
+
+    def objective_flat(x):
+        return objective(unpack(x))
+
+    H = torch.autograd.functional.hessian(
+        objective_flat, x_star
+    ).detach()
+
+    return H, x_star.detach(), unpack
+
+def notears_linear(X, lambda1, loss_type, tau, prior_knowledge=None, max_iter=1, h_tol=1e-8, rho_max=1e+16, w_threshold=0.3, sharpness=50.0, epsilon=1e-1, compare = False):
     """Solve min_W L(W; X) + lambda1 ‖W‖_1 s.t. h(W) = 0 using augmented Lagrangian.
 
     Args:
@@ -1194,7 +1234,7 @@ def notears_linear(X, lambda1, loss_type, tau, prior_knowledge=None, max_iter=10
     def solve_prior_direction(objective_without_k, constraint, k, W_star):
         # Gradient of the unweighted kth constraint.
         W = W_star.detach().clone().requires_grad_(True)
-        C_k = constraint(W)[k]  # Must return a scalar.
+        C_k = constraint(W, k)  # Must return a scalar.
         g_k, = torch.autograd.grad(C_k, W)
         g_k = g_k.detach().reshape(-1)
 
@@ -1262,10 +1302,10 @@ def notears_linear(X, lambda1, loss_type, tau, prior_knowledge=None, max_iter=10
             W_star = torch.tensor(_adj(w_new), dtype=torch.float64)
             X_t = torch.as_tensor(X, dtype=W_star.dtype)
             tau_t = torch.as_tensor(tau, dtype=W_star.dtype)
-
+            k = 0
             def objective_without_k(W):
                 return objective_without_prior(
-                    W, X_t, tau_t, k, exist_edge_pairs, prior_type, loss_type,
+                    W, X_t, tau_t, k, exist_edge_pairs, "exist_edge", loss_type,
                     alpha, rho,
                     lambda1=lambda1,
                     w_thres=w_threshold,
@@ -1273,18 +1313,168 @@ def notears_linear(X, lambda1, loss_type, tau, prior_knowledge=None, max_iter=10
                     sharpness=sharpness,
                 )
 
-            def constraint_k(W):
-                return exist_edges(
+            def constraint(W, k):
+                return exist_edges_loss(
                     W, exist_edge_pairs,
                     w_thres=w_threshold,
                     epsilon=epsilon,
                     sharpness=sharpness,
                 )[k]
-
-            v_k, iterations, relative_residual = solve_prior_direction(
-                objective_without_k, constraint_k, W_star
+            H, x_star, unpack = compute_hessian(
+                objective_without_k, W_star
             )
-            
+
+            symmetry_error = (
+                torch.linalg.vector_norm(H - H.T)
+                / torch.linalg.vector_norm(H).clamp_min(1e-12)
+            )
+
+            # Symmetrize only for eigenvalue diagnostics.
+            eigenvalues = torch.linalg.eigvalsh(0.5 * (H + H.T))
+
+            print("Hessian shape:", H.shape)
+            print("Relative symmetry error:", symmetry_error.item())
+            print("Minimum eigenvalue:", eigenvalues.min().item())
+            print("Maximum eigenvalue:", eigenvalues.max().item())
+            print("Condition number:", torch.linalg.cond(H).item())
+
+            x = x_star.clone().requires_grad_(True)
+            C_k = constraint(unpack(x), k)
+            g_k, = torch.autograd.grad(C_k, x)
+            g_k = g_k.detach()
+
+            # Direct solve: no CG and no explicit inverse.
+            v_k = torch.linalg.solve(H, g_k)
+            # Approximate leave-one-out weights.
+            W_star_np = _adj(w_new).copy()
+            W_approx = unpack(
+                x_star + tau[k] * v_k
+            ).detach().cpu().numpy()
+
+            relative_residual = (
+                torch.linalg.vector_norm(H @ v_k - g_k)
+                / torch.linalg.vector_norm(g_k).clamp_min(1e-12)
+            )
+            print("Direct-solve relative residual:", relative_residual.item())
+
+            # Freeze multipliers for exact leave-one-out reoptimization.
+            # _func already uses the current alpha and rho.
+            tau_original = tau.copy()
+            tau_without_k = tau.copy()
+            tau_without_k[k] = 0.0
+
+            try:
+                tau = tau_without_k
+
+                sol_without_k = sopt.minimize(
+                    _func,
+                    w_new.copy(),          # Start from the full-objective solution.
+                    method="L-BFGS-B",
+                    jac=True,
+                    bounds=bnds,          # Same diagonal and weight bounds.
+                    options={
+                        "maxls": 100, "ftol": 1e-15},
+                )
+            finally:
+                tau = tau_original
+
+            if not np.isfinite(sol_without_k.fun):
+                raise RuntimeError("Leave-one-out optimization became non-finite")
+
+            # Raw weights: do not threshold either estimate.
+            W_exact = _adj(sol_without_k.x).copy()
+
+            with torch.no_grad():
+                W_exact_t = torch.as_tensor(
+                    W_exact, dtype=W_star.dtype, device=W_star.device
+                )
+                W_approx_t = torch.as_tensor(
+                    W_approx, dtype=W_star.dtype, device=W_star.device
+                )
+
+                loss_star = loss(W_star, X_t, loss_type).item()
+                loss_exact = loss(W_exact_t, X_t, loss_type).item()
+                loss_approx = loss(W_approx_t, X_t, loss_type).item()
+
+            delta_loss_exact = loss_exact - loss_star
+            delta_loss_approx = loss_approx - loss_star
+
+            print("Data loss at W*:", loss_star)
+            print("Exact leave-one-out data loss difference:", delta_loss_exact)
+            print("Approximate leave-one-out data loss difference:", delta_loss_approx)
+            print("Absolute difference error:",
+                abs(delta_loss_approx - delta_loss_exact))
+            # Extract exact-reference weights in the same order as x_star.
+            d = W_star.shape[0]
+            mask = ~torch.eye(d, dtype=torch.bool, device=W_star.device)
+
+            W_exact_t = torch.as_tensor(
+                W_exact, dtype=W_star.dtype, device=W_star.device
+            )
+            x_exact = W_exact_t[mask].detach()
+
+            def gradient_without_k(x_value):
+                x = x_value.detach().clone().requires_grad_(True)
+                value = objective_without_k(unpack(x))
+                gradient, = torch.autograd.grad(value, x)
+                return gradient.detach()
+
+            grad_star = gradient_without_k(x_star)
+            grad_exact = gradient_without_k(x_exact)
+
+            delta = x_exact - x_star
+            H_delta = H @ delta
+
+            R = grad_exact - grad_star - H_delta
+
+            norm_R = torch.linalg.vector_norm(R)
+            norm_H_delta = torch.linalg.vector_norm(H_delta)
+
+            if norm_H_delta.item() > 1e-12:
+                remainder_ratio = (norm_R / norm_H_delta).item()
+            else:
+                remainder_ratio = float("nan")
+
+            print("Gradient Taylor remainder norm:", norm_R.item())
+            print("Linear gradient-change norm:", norm_H_delta.item())
+            print("Relative Taylor remainder:", remainder_ratio)
+
+            absolute_error = np.linalg.norm(W_approx - W_exact, ord="fro")
+            exact_displacement = np.linalg.norm(W_exact - W_star_np, ord="fro")
+            relative_error = absolute_error / (exact_displacement + 1e-12)
+
+            delta_approx = W_approx - W_star_np
+            delta_exact = W_exact - W_star_np
+
+            norm_approx = np.linalg.norm(delta_approx, ord="fro")
+            norm_exact = np.linalg.norm(delta_exact, ord="fro")
+
+            if norm_approx > 1e-12 and norm_exact > 1e-12:
+                cosine = np.sum(delta_approx * delta_exact) / (
+                    norm_approx * norm_exact
+                )
+            else:
+                cosine = np.nan  # Direction is undefined for zero displacement.
+
+            print("Displacement cosine similarity:", cosine)
+            print("Approximate displacement norm:", norm_approx)
+            print("Exact displacement norm:", norm_exact)
+
+            # Check constrained stationarity of the reference solve.
+            lower = np.array([bound[0] for bound in bnds])
+            upper = np.array([bound[1] for bound in bnds])
+            projected_gradient = sol_without_k.x - np.clip(
+                sol_without_k.x - sol_without_k.jac, lower, upper
+            )
+
+            print("prior:", k)
+            print("reference solver success:", sol_without_k.success)
+            print("reference solver message:", sol_without_k.message)
+            print("reference projected gradient:",
+                np.max(np.abs(projected_gradient)))
+            print("exact displacement:", exact_displacement)
+            print("approximation absolute error:", absolute_error)
+            print("approximation relative error:", relative_error)
             h_new, _ = _h(_adj(w_new))
             if h_new > 0.25 * h:
                 rho *= 10
@@ -1343,7 +1533,7 @@ if __name__ == '__main__':
         W_est_no_prior_ll = linear.notears_linear(X_std, lambda1=0.1, loss_type="likelihood", w_threshold=args.t)
         running_time_no_prior_ll = time.perf_counter() - start_time
         h_est_no_prior_ll, _ = _h(W_est_no_prior_ll)
-        loss_no_prior_ll, _ = _loss(W_est_no_prior_ll, X_std, "likelihood")
+        loss_no_prior_ll = _loss(torch.as_tensor(W_est_no_prior_ll, dtype=torch.float64), torch.as_tensor(X_std, dtype=torch.float64), "likelihood").item()
         try:
             if not utils.is_dag(W_est_no_prior_ll):
                 raise ValueError("Estimated graph contains a directed cycle")
@@ -1390,7 +1580,7 @@ if __name__ == '__main__':
         W_est_prior_ll, sol_success_ll = notears_linear(X_std, lambda1=0.1, loss_type="likelihood", tau=args.tau, prior_knowledge=prior_knowledge_ll, w_threshold=args.t, epsilon=args.ep, compare=args.c,)
         running_time_prior_ll = time.perf_counter() - start_time
         h_est_prior_ll, _ = _h(W_est_prior_ll)
-        loss_prior_ll, _ = _loss(W_est_prior_ll, X_std, "likelihood")
+        loss_prior_ll = _loss(torch.as_tensor(W_est_prior_ll, dtype=torch.float64), torch.as_tensor(X_std, dtype=torch.float64), "likelihood").item()
         constraint_values_prior_ll = evaluate_prior_values(W_est_prior_ll, prior_knowledge_ll, args.t, args.c)
         satisfied_prior_ll, satisfied_percentage_prior_ll = utils.evaluate_prior_knowledge(W_est_prior_ll, prior_knowledge_ll)
         try:
@@ -1416,7 +1606,7 @@ if __name__ == '__main__':
             W_est_no_prior_l2 = linear.notears_linear(X_std, lambda1=0.1, loss_type="l2", w_threshold=args.t)
             running_time_no_prior_l2 = time.perf_counter() - start_time
             h_est_no_prior_l2, _ = _h(W_est_no_prior_l2)
-            loss_no_prior_l2, _ = _loss(W_est_no_prior_l2, X_std, "l2")
+            loss_no_prior_l2 = _loss(torch.as_tensor(W_est_no_prior_l2, dtype=torch.float64), torch.as_tensor(X_std, dtype=torch.float64), "l2").item()
             try:
                 if not utils.is_dag(W_est_no_prior_l2):
                     raise ValueError("Estimated graph contains a directed cycle")
@@ -1463,7 +1653,7 @@ if __name__ == '__main__':
             W_est_prior_l2, sol_success_l2 = notears_linear(X_std, lambda1=0.1, loss_type="l2", tau=args.tau, prior_knowledge=prior_knowledge_l2, w_threshold=args.t, epsilon=args.ep, compare=args.c)
             running_time_prior_l2 = time.perf_counter() - start_time
             h_est_prior_l2, _ = _h(W_est_prior_l2)
-            loss_prior_l2, _ = _loss(W_est_prior_l2, X_std, "l2")
+            loss_prior_l2 = _loss(torch.as_tensor(W_est_prior_l2, dtype=torch.float64), torch.as_tensor(X_std, dtype=torch.float64), "l2").item()
             constraint_values_prior_l2 = evaluate_prior_values(W_est_prior_l2, prior_knowledge_l2, args.t, args.c)
             satisfied_prior_l2, satisfied_percentage_prior_l2 = utils.evaluate_prior_knowledge(W_est_prior_l2, prior_knowledge_l2)
             try:
