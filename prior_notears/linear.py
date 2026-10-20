@@ -13,9 +13,6 @@ from sklearn.preprocessing import StandardScaler
 from Varsortability.src.varsortability import varsortability
 import time
 import traceback
-import torch
-from RoaDs.PSL.min_norm_solvers import gradient_normalizers
-from RoaDs.PSL.min_norm_solvers import MinNormSolver
 
 def softplus(x, sharpness=50.0):
     return np.logaddexp(0.0, sharpness * x) / sharpness
@@ -503,6 +500,7 @@ def _p0(W):
     value = 0.5*np.sum(W ** 2)
     grad = W
     return value, grad.reshape(-1)
+
 def evaluate_prior_values(W, prior_knowledge, w_threshold, compare = False):
     constraint_values = {}
 
@@ -576,6 +574,7 @@ def _loss(W, X, loss_type):
         G_loss = -(X.T @ R) / (X.shape[0] * residual_var)
         G_loss += np.linalg.inv(A).T
         return loss, G_loss.ravel()
+####just for test, to delete later #######################################
 
 def notears_linear(X, lambda1, loss_type, tau, prior_knowledge=None, max_iter=100, h_tol=1e-8, rho_max=1e+16, w_threshold=0.3, sharpness=50.0, epsilon=1e-1, compare = False):
     """Solve min_W L(W; X) + lambda1 ‖W‖_1 s.t. h(W) = 0 using augmented Lagrangian.
@@ -1064,7 +1063,7 @@ def notears_linear(X, lambda1, loss_type, tau, prior_knowledge=None, max_iter=10
     #     g_obj = np.concatenate((G_smooth + lambda1, - G_smooth + lambda1), axis=None)
     #     return obj, g_obj
 
-    def _func(w, return_diagnostics=False, task_weights=None):
+    def _func(w):
         """Evaluate value and gradient of augmented Lagrangian for doubled variables ([2 d^2] array)."""
         W = _adj(w)
         loss, G_loss = _loss(W)
@@ -1080,78 +1079,11 @@ def notears_linear(X, lambda1, loss_type, tau, prior_knowledge=None, max_iter=10
         coefficient = -tau_i * sigmoid(sharpness * residual)
         _, G_i = combined_inequality_constraints(W, coefficient=coefficient)
         G_prior = G_e + G_i
-
-        # Task 1: data fitting, sparsity, and acyclicity.
-        L1 = loss + lambda1 * w.sum() + alpha * h + 0.5 * rho * h**2
-
-        G1 = (
-            G_loss.reshape(-1)
-            + (alpha + rho * h) * G_h.reshape(-1)
-        )
-        g1 = np.concatenate((G1 + lambda1, -G1 + lambda1), axis=None)
-
-        # Task 2: soft prior penalties.
-        L2 = tau @ c
-        G2 = G_prior.reshape(-1)
-        g2 = np.concatenate((G2, -G2), axis=None)
-
-        # Normalization
-        if return_diagnostics:
-            grads = {
-                0: [torch.as_tensor(g1, dtype=torch.float64)],
-                1: [torch.as_tensor(g2, dtype=torch.float64)],
-            }
-            losses = {0: float(L1), 1: float(L2)}
-
-            normalizers = gradient_normalizers(
-                grads, losses, normalization_type="l2"
-            )
-
-            norm1 = float(normalizers[0])
-            norm2 = float(normalizers[1])
-
-            if not np.isfinite(norm1) or not np.isfinite(norm2):
-                raise FloatingPointError("Non-finite task gradient norm")
-
-            if norm1 == 0.0 or norm2 == 0.0:
-                # Cannot normalize a zero gradient.
-                a1, a2 = 0.5, 0.5
-                min_norm_squared = float(
-                    np.linalg.norm(a1 * g1 + a2 * g2) ** 2
-                )
-            else:
-                normalized_g1 = g1 / normalizers[0]
-                normalized_g2 = g2 / normalizers[1]
-
-                weights, _ = MinNormSolver.find_min_norm_element([
-                    [torch.as_tensor(normalized_g1, dtype=torch.float64)],
-                    [torch.as_tensor(normalized_g2, dtype=torch.float64)],
-                ])
-                a1, a2 = weights
-                min_norm_squared = float(
-                    np.linalg.norm(
-                        a1 * normalized_g1 + a2 * normalized_g2
-                    ) ** 2
-                )
-
-            return {
-                "a1": float(a1),
-                "a2": float(a2),
-                "norm_g1": norm1,
-                "norm_g2": norm2,
-                "min_norm_squared": min_norm_squared,
-            }
-
-        # No supplied weights: preserve the original objective.
-        if task_weights is None:
-            return L1 + L2, g1 + g2
-
-        # Supplied weights stay fixed throughout the optimizer call.
-        a1, a2 = task_weights
-        return (
-            2 * a1 * L1 + 2 * a2 * L2,
-            2 * a1 * g1 + 2 * a2 * g2,
-        )
+        p0, G_p0 = _p0(W)
+        obj = loss + tau @ c + 0.5 * rho * h * h + alpha * h + lambda1 * w.sum()
+        G_smooth = G_loss.reshape(-1) + G_prior + (rho * h + alpha) * G_h.reshape(-1)
+        g_obj = np.concatenate((G_smooth + lambda1, - G_smooth + lambda1), axis=None)
+        return obj, g_obj
 
     # def _violation(c_e, c_i):
     #     e = (
@@ -1220,27 +1152,7 @@ def notears_linear(X, lambda1, loss_type, tau, prior_knowledge=None, max_iter=10
         inner_attempt = 0
         while rho < rho_max:
             inner_attempt += 1
-            accepted_iteration = 0
-            diagnostics = _func(w_est, return_diagnostics=True)
-            fixed_weights = (diagnostics["a1"], diagnostics["a2"])
-
-            def weighted_objective(w):
-                return _func(w, task_weights=fixed_weights)
-
-            def log_iteration(w):
-                nonlocal accepted_iteration
-                accepted_iteration += 1
-
-                diagnostics = _func(w, return_diagnostics=True)
-                print(
-                    f"inner_iter={accepted_iteration}, "
-                    f"used_a1={fixed_weights[0]:.6e}, "
-                    f"used_a2={fixed_weights[1]:.6e}, "
-                    f"suggested_a1={diagnostics['a1']:.6e}, "
-                    f"suggested_a2={diagnostics['a2']:.6e}",
-                    flush=True,
-                )
-            sol = sopt.minimize(weighted_objective, w_est, method='L-BFGS-B', jac=True, bounds=bnds, callback=log_iteration, options={"maxls": 100, "ftol": 1e-15})
+            sol = sopt.minimize(_func, w_est, method='L-BFGS-B', jac=True, bounds=bnds, options={"maxls": 100, "ftol": 1e-15})
 
             if not sol.success:
                 print("L-BFGS-B warning:", sol.message)
@@ -1347,9 +1259,9 @@ if __name__ == '__main__':
     print("B_true:", B_true)
     W_true = utils.simulate_parameter(B_true)
     if not args.c:
-        filename = f"linear_{args.p}_{graph_type}{args.e}_d{d}_{sem_type}_rate{args.r}_epsilon{args.ep}_seed{args.s}_tau{args.tau}_mtl.json"
+        filename = f"linear_{args.p}_{graph_type}{args.e}_d{d}_{sem_type}_rate{args.r}_epsilon{args.ep}_seed{args.s}_tau{args.tau}_soft.json"
     else:
-        filename = f"linear_{args.p}_{graph_type}{args.e}_d{d}_{sem_type}_rate{args.r}_epsilon10_seed{args.s}_mtl_compare.json"
+        filename = f"linear_{args.p}_{graph_type}{args.e}_d{d}_{sem_type}_rate{args.r}_epsilon10_seed{args.s}_compare.json"
 
     noise_scale = np.exp(np.random.uniform(np.log(0.5), np.log(2.0), size=d,))
     X = utils.simulate_linear_sem(W_true, n, sem_type, noise_scale)
