@@ -13,42 +13,53 @@ if [[ ! "${MAX_JOBS}" =~ ^[1-9][0-9]*$ ]]; then
     exit 1
 fi
 
+if (( BASH_VERSINFO[0] < 5 || (BASH_VERSINFO[0] == 5 && BASH_VERSINFO[1] < 1) )); then
+    echo "Rolling scheduling requires Bash 5.1 or newer." >&2
+    exit 1
+fi
+
 # Limit numerical-library threads in each concurrent process.
 export OMP_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 
-pids=()
+declare -A pids=()
 failed_jobs=0
-wait_for_batch() {
-    local pid
-    local failed=0
-    for pid in "${pids[@]}"; do
-        if ! wait "${pid}"; then
-            failed=$((failed + 1))
-        fi
-    done
-    pids=()
-    if (( failed )); then
-        failed_jobs=$((failed_jobs + failed))
-        echo "${failed} experiment(s) failed in this batch; continuing. Check the logs." >&2
+wait_for_one() {
+    local finished_pid status=0
+    wait -n -p finished_pid "${!pids[@]}" || status=$?
+
+    # Already-finished children may no longer be eligible for wait -n.
+    # Explicit wait still retrieves their saved exit status.
+    if [[ -z "${finished_pid:-}" ]]; then
+        for finished_pid in "${!pids[@]}"; do
+            break
+        done
+        status=0
+        wait "${finished_pid}" || status=$?
     fi
+
+    if (( status != 0 )); then
+        failed_jobs=$((failed_jobs + 1))
+        echo "Experiment failed (exit ${status}); log: ${pids[$finished_pid]}" >&2
+    fi
+    unset 'pids[$finished_pid]'
     return 0
 }
 
-NODE_COUNTS=(10)
+NODE_COUNTS=(10 20 30 40 50)
 EPSILONS=(0.1)
-TAU_SETTINGS=("1.0 1.0" "1.0 0.5" "1.0 0.0")
+# TAU_SETTINGS=(1.0 3.0 10.0 15.0) #"1.0 0.5" "1.0 0.0"
 NOISE_TYPES=(gauss)
 LOSS_TYPE=(both)
 PRIOR_TYPES=(
     # forbid_edge_pairs
     # forbid_path_pairs
     # forbid_trek_pairs
-    exist_edge_pairs
+    # exist_edge_pairs
     # exist_path_pairs
     # exist_trek_pairs
-    # mix
+    mix
 )
 PRIOR_RATE=0.5
 # Each entry is "graph_type:edge_factor". linear.py calculates s0 as d times
@@ -63,59 +74,60 @@ GRAPH_SETTINGS=(
 # EPSILONS=(0.1 0.01 0.001 0.0001)
 cd "${PROJECT_ROOT}"
 
-# for seed in {0..9}; do
-for seed in 0; do
+for seed in {0..9}; do
+# for seed in 0; do
     for d in "${NODE_COUNTS[@]}"; do
-        for tau_setting in "${TAU_SETTINGS[@]}"; do
-            read -r tau_correct tau_wrong <<< "${tau_setting}"
-            for graph_setting in "${GRAPH_SETTINGS[@]}"; do
-                graph_type="${graph_setting%%:*}"
-                edge_factor="${graph_setting##*:}"
+        # for tau_setting in "${TAU_SETTINGS[@]}"; do
+        for graph_setting in "${GRAPH_SETTINGS[@]}"; do
+            graph_type="${graph_setting%%:*}"
+            edge_factor="${graph_setting##*:}"
 
-                for noise_type in "${NOISE_TYPES[@]}"; do
-                    for prior_type in "${PRIOR_TYPES[@]}"; do
-                        for epsilon in "${EPSILONS[@]}"; do
-                            echo "Running seed=${seed} d=${d} graph=${graph_type}${edge_factor} noise=${noise_type} prior=${prior_type} rate=${PRIOR_RATE} epsilon=${epsilon}"
+            for noise_type in "${NOISE_TYPES[@]}"; do
+                for prior_type in "${PRIOR_TYPES[@]}"; do
+                    for epsilon in "${EPSILONS[@]}"; do
+                        echo "Running seed=${seed} d=${d} graph=${graph_type}${edge_factor} noise=${noise_type} prior=${prior_type} rate=${PRIOR_RATE} epsilon=${epsilon}"
 
-                            output_dir="${PROJECT_ROOT}/linear_${prior_type}"
-                            log_dir="${output_dir}/log"
-                            result_stem="linear_${prior_type}_${graph_type}${edge_factor}_d${d}_${noise_type}_rate${PRIOR_RATE}_epsilon${epsilon}_seed${seed}_tau${tau_correct}_${tau_wrong}"
-                            result_file="${output_dir}/${result_stem}.json"
-                            log_file="${log_dir}/${result_stem}.log"
-                            mkdir -p "${output_dir}" "${log_dir}"
+                        output_dir="${PROJECT_ROOT}/linear_${prior_type}"
+                        log_dir="${output_dir}/log"
+                        result_stem="linear_${prior_type}_${graph_type}${edge_factor}_d${d}_${noise_type}_rate${PRIOR_RATE}_epsilon${epsilon}_seed${seed}_twopenalty"
+                        result_file="${output_dir}/${result_stem}.json"
+                        log_file="${log_dir}/${result_stem}.log"
+                        mkdir -p "${output_dir}" "${log_dir}"
 
-                            (
-                                "${PYTHON_BIN}" -u -m prior_notears.linear \
-                                    --seed "${seed}" \
-                                    --num_nodes "${d}" \
-                                    --num_edges_per_node "${edge_factor}" \
-                                    --graph_type "${graph_type}" \
-                                    --loss_type "${LOSS_TYPE}" \
-                                    --noise "${noise_type}" \
-                                    --prior_type "${prior_type}" \
-                                    --prior_rate "${PRIOR_RATE}" \
-                                    --epsilon "${epsilon}" \
-                                    --tau "${tau_correct}" "${tau_wrong}" \
-                                    > "${log_file}" 2>&1
+                        (
+                            "${PYTHON_BIN}" -u -m prior_notears.linear_hard \
+                                --seed "${seed}" \
+                                --num_nodes "${d}" \
+                                --num_edges_per_node "${edge_factor}" \
+                                --graph_type "${graph_type}" \
+                                --loss_type "${LOSS_TYPE}" \
+                                --noise "${noise_type}" \
+                                --prior_type "${prior_type}" \
+                                --prior_rate "${PRIOR_RATE}" \
+                                --epsilon "${epsilon}" \
+                                # --tau "${tau_setting}" \
+                                > "${log_file}" 2>&1
 
-                                if [[ ! -f "${result_file}" ]]; then
-                                    echo "Expected result file was not created: ${result_file}" >&2
-                                    exit 1
-                                fi
-                            ) &
-                            pids+=("$!")
-                            if (( ${#pids[@]} >= MAX_JOBS )); then
-                                wait_for_batch
+                            if [[ ! -f "${result_file}" ]]; then
+                                echo "Expected result file was not created: ${result_file}" >&2
+                                exit 1
                             fi
-                        done
+                        ) &
+                        pids[$!]="${log_file}"
+                        if (( ${#pids[@]} >= MAX_JOBS )); then
+                            wait_for_one
+                        fi
                     done
                 done
             done
         done
+        # done
     done
 done
 
-wait_for_batch
+while (( ${#pids[@]} > 0 )); do
+    wait_for_one
+done
 if (( failed_jobs )); then
     echo "All linear experiments finished; ${failed_jobs} experiment(s) failed. Check the logs." >&2
     exit 1

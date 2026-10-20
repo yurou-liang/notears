@@ -1080,8 +1080,8 @@ def notears_linear(X, lambda1, loss_type, tau, prior_knowledge=None, max_iter=10
         _, G_i = combined_inequality_constraints(W, coefficient=coefficient)
         G_prior = G_e + G_i
         p0, G_p0 = _p0(W)
-        obj = loss + p0 + tau @ c + 0.5 * rho * h * h + alpha * h + lambda1 * w.sum()
-        G_smooth = G_loss.reshape(-1) + G_p0 + G_prior + (rho * h + alpha) * G_h.reshape(-1)
+        obj = loss + tau @ c + 0.5 * rho * h * h + alpha * h + lambda1 * w.sum()
+        G_smooth = G_loss.reshape(-1) + G_prior + (rho * h + alpha) * G_h.reshape(-1)
         g_obj = np.concatenate((G_smooth + lambda1, - G_smooth + lambda1), axis=None)
         return obj, g_obj
 
@@ -1130,6 +1130,18 @@ def notears_linear(X, lambda1, loss_type, tau, prior_knowledge=None, max_iter=10
     n, d = X.shape
     # w_est = np.random.uniform(0.0, 0.1, size=2 * d * d)  # double w_est into (w_pos, w_neg)
     w_est, rho, alpha, h = np.zeros(2 * d * d), 1.0, 0.0, np.inf
+    n_priors = (
+    len(forbid_edge_pairs)
+    + len(forbid_path_pairs)
+    + len(forbid_trek_pairs)
+    + len(exist_edge_pairs)
+    + len(exist_trek_pairs)
+    + (
+        int(bool(exist_path_pairs))
+        if compare else len(exist_path_pairs)
+    )
+)
+    tau = np.full(n_priors, tau, dtype=np.float64)
     weight_bound = 5.0
     bnds = [(0, 0) if i == j else (0, weight_bound) for _ in range(2) for i in range(d) for j in range(d)]
 
@@ -1185,6 +1197,34 @@ def notears_linear(X, lambda1, loss_type, tau, prior_knowledge=None, max_iter=10
                 break
         w_est, h = w_new, h_new
         alpha += rho * h
+
+        W_raw = _adj(w_est).copy()
+        _, G_data = _loss(W_raw)
+        G_data = G_data.reshape(-1)
+
+        for k, pair in enumerate(exist_edge_pairs):
+            # i_k(W) = W[i, j]^2 - w_threshold^2
+            i_value = _exist_edges(W_raw, w_threshold, [pair])
+            residual = epsilon - i_value
+
+            # C_k(W) = softplus(residual, sharpness)
+            # Gradient coefficient includes the minus sign from residual.
+            coefficient = -sigmoid(sharpness * residual)
+            _, G_constraint = _exist_edges(
+                W_raw, w_threshold, [pair],
+                coefficient=coefficient,
+            )
+
+            A_k = float(G_data @ G_constraint.reshape(-1))
+
+            print(
+                f"outer_iter={outer_iter}, "
+                f"prior={k}, edge={pair}, "
+                f"A_k={A_k:.6e}, "
+                f"data_grad_norm={np.linalg.norm(G_data):.6e}, "
+                f"prior_grad_norm={np.linalg.norm(G_constraint):.6e}",
+                flush=True,
+            )
         if h <= h_tol or rho >= rho_max:
             print("final rho:", rho)
             print("final h:", h)
@@ -1209,7 +1249,7 @@ if __name__ == '__main__':
     parser.add_argument('-t', '--w_threshold', dest='t', default=0.3, type=float)
     parser.add_argument('-ep', '--epsilon', dest='ep', default=1e-1, type=float)
     parser.add_argument('-c', '--compare', dest='c', action='store_true', default=False)
-    parser.add_argument('-tau', '--tau', dest='tau', default=[1.0, 1.0], nargs='+', type=float)
+    parser.add_argument('-tau', '--tau', dest='tau', default=1.0, type=float)
     args = parser.parse_args()
 
     from prior_notears import utils
@@ -1219,9 +1259,9 @@ if __name__ == '__main__':
     print("B_true:", B_true)
     W_true = utils.simulate_parameter(B_true)
     if not args.c:
-        filename = f"linear_{args.p}_{graph_type}{args.e}_d{d}_{sem_type}_rate{args.r}_epsilon{args.ep}_seed{args.s}_tau{args.tau[0]}_{args.tau[1]}.json"
+        filename = f"linear_{args.p}_{graph_type}{args.e}_d{d}_{sem_type}_rate{args.r}_epsilon{args.ep}_seed{args.s}_tau{args.tau}_soft.json"
     else:
-        filename = f"linear_{args.p}_{graph_type}{args.e}_d{d}_{sem_type}_rate{args.r}_epsilon10_seed{args.s}_tau{args.tau[0]}_{args.tau[1]}_compare.json"
+        filename = f"linear_{args.p}_{graph_type}{args.e}_d{d}_{sem_type}_rate{args.r}_epsilon10_seed{args.s}_compare.json"
 
     noise_scale = np.exp(np.random.uniform(np.log(0.5), np.log(2.0), size=d,))
     X = utils.simulate_linear_sem(W_true, n, sem_type, noise_scale)
@@ -1254,27 +1294,27 @@ if __name__ == '__main__':
         else:
             evaluation_status["no_prior_ll"] = {"status": "completed"}
 
-        # if 'exist' in args.p:
-        #     prior_knowledge_ll = utils.generate_prior_knowledge(
-        #         B_true,
-        #         prior_rate=args.r,
-        #         prior_type=args.p,
-        #     )
-        # elif 'forbid' in args.p:
-        #     prior_knowledge_ll = utils.generate_unsatisfed_prior_knowledge(
-        #         B_true,
-        #         B_est=W_est_no_prior_ll,
-        #         prior_rate=args.r,
-        #         prior_type=args.p,
-        #     )
-        # elif args.p=='mix':
-        #     prior_knowledge_ll = utils.generate_mixed_prior_knowledge(
-        #         B_true,
-        #         B_est=W_est_no_prior_ll,
-        #         prior_rate=args.r,
-        #         prior_type=args.p,
-        #     )
-        prior_knowledge_ll = {"exist_edge_pairs": [(7, 0), (7, 2)]}
+        if 'exist' in args.p:
+            prior_knowledge_ll = utils.generate_prior_knowledge(
+                B_true,
+                prior_rate=args.r,
+                prior_type=args.p,
+            )
+        elif 'forbid' in args.p:
+            prior_knowledge_ll = utils.generate_unsatisfed_prior_knowledge(
+                B_true,
+                B_est=W_est_no_prior_ll,
+                prior_rate=args.r,
+                prior_type=args.p,
+            )
+        elif args.p=='mix':
+            prior_knowledge_ll = utils.generate_mixed_prior_knowledge(
+                B_true,
+                B_est=W_est_no_prior_ll,
+                prior_rate=args.r,
+                prior_type=args.p,
+            )
+
         print("prior_knowledge_ll:", prior_knowledge_ll)
         constraint_values_no_prior_ll = evaluate_prior_values(W_est_no_prior_ll, prior_knowledge_ll, args.t)
         satisfied_no_prior_ll, satisfied_percentage_no_prior_ll = utils.evaluate_prior_knowledge(W_est_no_prior_ll, prior_knowledge_ll)
@@ -1327,27 +1367,27 @@ if __name__ == '__main__':
             else:
                 evaluation_status["no_prior_l2"] = {"status": "completed"}
 
-            # if 'exist' in args.p:
-            #     prior_knowledge_l2 = utils.generate_prior_knowledge(
-            #         B_true,
-            #         prior_rate=args.r,
-            #         prior_type=args.p,
-            #     )
-            # elif 'forbid' in args.p:
-            #     prior_knowledge_l2 = utils.generate_unsatisfed_prior_knowledge(
-            #         B_true,
-            #         B_est=W_est_no_prior_l2,
-            #         prior_rate=args.r,
-            #         prior_type=args.p,
-            #     )
-            # elif args.p=='mix':
-            #     prior_knowledge_l2 = utils.generate_mixed_prior_knowledge(
-            #         B_true,
-            #         B_est=W_est_no_prior_l2,
-            #         prior_rate=args.r,
-            #         prior_type=args.p,
-            #     )
-            prior_knowledge_l2 = {"exist_edge_pairs": [(7, 0), (7, 2)]}
+            if 'exist' in args.p:
+                prior_knowledge_l2 = utils.generate_prior_knowledge(
+                    B_true,
+                    prior_rate=args.r,
+                    prior_type=args.p,
+                )
+            elif 'forbid' in args.p:
+                prior_knowledge_l2 = utils.generate_unsatisfed_prior_knowledge(
+                    B_true,
+                    B_est=W_est_no_prior_l2,
+                    prior_rate=args.r,
+                    prior_type=args.p,
+                )
+            elif args.p=='mix':
+                prior_knowledge_l2 = utils.generate_mixed_prior_knowledge(
+                    B_true,
+                    B_est=W_est_no_prior_l2,
+                    prior_rate=args.r,
+                    prior_type=args.p,
+                )
+            # prior_knowledge_l2 = {"exist_edge_pairs": [(7, 0), (7, 2)]}
             print("prior_knowledge_l2:", prior_knowledge_l2)
             constraint_values_no_prior_l2 = evaluate_prior_values(W_est_no_prior_l2, prior_knowledge_l2, args.t)
             satisfied_no_prior_l2, satisfied_percentage_no_prior_l2 = utils.evaluate_prior_knowledge(W_est_no_prior_l2, prior_knowledge_l2)
