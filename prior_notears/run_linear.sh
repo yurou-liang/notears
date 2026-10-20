@@ -47,19 +47,19 @@ wait_for_one() {
     return 0
 }
 
-NODE_COUNTS=(10)
+NODE_COUNTS=(10 20 30 40 50)
 EPSILONS=(0.1)
 # TAU_SETTINGS=(1.0 3.0 10.0 15.0) #"1.0 0.5" "1.0 0.0"
 NOISE_TYPES=(gauss)
 LOSS_TYPE=(both)
 PRIOR_TYPES=(
-    # forbid_edge_pairs
-    # forbid_path_pairs
-    # forbid_trek_pairs
-    # exist_edge_pairs
+    forbid_edge_pairs
+    forbid_path_pairs
+    forbid_trek_pairs
+    exist_edge_pairs
     exist_path_pairs
-    # exist_trek_pairs
-    # mix
+    exist_trek_pairs
+    mix
 )
 PRIOR_RATE=0.5
 # Each entry is "graph_type:edge_factor". linear.py calculates s0 as d times

@@ -1198,33 +1198,6 @@ def notears_linear(X, lambda1, loss_type, tau, prior_knowledge=None, max_iter=10
         w_est, h = w_new, h_new
         alpha += rho * h
 
-        W_raw = _adj(w_est).copy()
-        _, G_data = _loss(W_raw)
-        G_data = G_data.reshape(-1)
-
-        for k, pair in enumerate(exist_edge_pairs):
-            # i_k(W) = W[i, j]^2 - w_threshold^2
-            i_value = _exist_edges(W_raw, w_threshold, [pair])
-            residual = epsilon - i_value
-
-            # C_k(W) = softplus(residual, sharpness)
-            # Gradient coefficient includes the minus sign from residual.
-            coefficient = -sigmoid(sharpness * residual)
-            _, G_constraint = _exist_edges(
-                W_raw, w_threshold, [pair],
-                coefficient=coefficient,
-            )
-
-            A_k = float(G_data @ G_constraint.reshape(-1))
-
-            print(
-                f"outer_iter={outer_iter}, "
-                f"prior={k}, edge={pair}, "
-                f"A_k={A_k:.6e}, "
-                f"data_grad_norm={np.linalg.norm(G_data):.6e}, "
-                f"prior_grad_norm={np.linalg.norm(G_constraint):.6e}",
-                flush=True,
-            )
         if h <= h_tol or rho >= rho_max:
             print("final rho:", rho)
             print("final h:", h)
