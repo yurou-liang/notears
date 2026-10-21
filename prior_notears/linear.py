@@ -13,6 +13,9 @@ from sklearn.preprocessing import StandardScaler
 from Varsortability.src.varsortability import varsortability
 import time
 import traceback
+import torch
+from RoaDs.PSL.min_norm_solvers import gradient_normalizers
+from RoaDs.PSL.min_norm_solvers import MinNormSolver
 
 def softplus(x, sharpness=50.0):
     return np.logaddexp(0.0, sharpness * x) / sharpness
@@ -500,7 +503,6 @@ def _p0(W):
     value = 0.5*np.sum(W ** 2)
     grad = W
     return value, grad.reshape(-1)
-
 def evaluate_prior_values(W, prior_knowledge, w_threshold, compare = False):
     constraint_values = {}
 
@@ -574,7 +576,6 @@ def _loss(W, X, loss_type):
         G_loss = -(X.T @ R) / (X.shape[0] * residual_var)
         G_loss += np.linalg.inv(A).T
         return loss, G_loss.ravel()
-####just for test, to delete later #######################################
 
 def notears_linear(X, lambda1, loss_type, tau, prior_knowledge=None, max_iter=100, h_tol=1e-8, rho_max=1e+16, w_threshold=0.3, sharpness=50.0, epsilon=1e-1, compare = False):
     """Solve min_W L(W; X) + lambda1 ‖W‖_1 s.t. h(W) = 0 using augmented Lagrangian.
@@ -1063,7 +1064,8 @@ def notears_linear(X, lambda1, loss_type, tau, prior_knowledge=None, max_iter=10
     #     g_obj = np.concatenate((G_smooth + lambda1, - G_smooth + lambda1), axis=None)
     #     return obj, g_obj
 
-    def _func(w):
+    def _func(w, return_diagnostics=False, task_weights=None,
+              task_normalizers=None):
         """Evaluate value and gradient of augmented Lagrangian for doubled variables ([2 d^2] array)."""
         W = _adj(w)
         loss, G_loss = _loss(W)
@@ -1079,11 +1081,100 @@ def notears_linear(X, lambda1, loss_type, tau, prior_knowledge=None, max_iter=10
         coefficient = -tau_i * sigmoid(sharpness * residual)
         _, G_i = combined_inequality_constraints(W, coefficient=coefficient)
         G_prior = G_e + G_i
-        p0, G_p0 = _p0(W)
-        obj = loss + tau @ c + 0.5 * rho * h * h + alpha * h + lambda1 * w.sum()
-        G_smooth = G_loss.reshape(-1) + G_prior + (rho * h + alpha) * G_h.reshape(-1)
-        g_obj = np.concatenate((G_smooth + lambda1, - G_smooth + lambda1), axis=None)
-        return obj, g_obj
+
+        # Task 1: data fitting, sparsity, and acyclicity.
+        L1 = loss + lambda1 * w.sum() + alpha * h + 0.5 * rho * h**2
+
+        G1 = (
+            G_loss.reshape(-1)
+            + (alpha + rho * h) * G_h.reshape(-1)
+        )
+        g1 = np.concatenate((G1 + lambda1, -G1 + lambda1), axis=None)
+
+        # Task 2: soft prior penalties.
+        L2 = tau @ c
+        G2 = G_prior.reshape(-1)
+        g2 = np.concatenate((G2, -G2), axis=None)
+
+        # Normalization
+        if return_diagnostics:
+            grads = {
+                0: [torch.as_tensor(g1, dtype=torch.float64)],
+                1: [torch.as_tensor(g2, dtype=torch.float64)],
+            }
+            losses = {0: float(L1), 1: float(L2)}
+
+            normalizers = gradient_normalizers(
+                grads, losses, normalization_type="l2"
+            )
+
+            norm1 = float(normalizers[0])
+            norm2 = float(normalizers[1])
+
+            if not np.isfinite(norm1) or not np.isfinite(norm2):
+                raise FloatingPointError("Non-finite task gradient norm")
+
+            # A zero-gradient task is left unscaled for this inner solve.
+            norm1 = norm1 if norm1 > 0.0 else 1.0
+            norm2 = norm2 if norm2 > 0.0 else 1.0
+            normalized_g1 = g1 / norm1
+            normalized_g2 = g2 / norm2
+
+            if np.linalg.norm(g1) == 0 or np.linalg.norm(g2) == 0:
+                # Cannot normalize a zero gradient.
+                a1, a2 = 0.5, 0.5
+                min_norm_squared = float(
+                    np.linalg.norm(a1 * normalized_g1 + a2 * normalized_g2) ** 2
+                )
+            else:
+                weights, _ = MinNormSolver.find_min_norm_element([
+                    [torch.as_tensor(normalized_g1, dtype=torch.float64)],
+                    [torch.as_tensor(normalized_g2, dtype=torch.float64)],
+                ])
+                a1, a2 = weights
+                min_norm_squared = float(
+                    np.linalg.norm(
+                        a1 * normalized_g1 + a2 * normalized_g2
+                    ) ** 2
+                )
+
+            return {
+                "a1": float(a1),
+                "a2": float(a2),
+                "L1": float(L1),
+                "L2": float(L2),
+                "normalizer_1": norm1,
+                "normalizer_2": norm2,
+                "norm_g1": float(np.linalg.norm(g1)),
+                "norm_g2": float(np.linalg.norm(g2)),
+                "normalized_norm_g1": float(np.linalg.norm(g1 / norm1)),
+                "normalized_norm_g2": float(np.linalg.norm(g2 / norm2)),
+                "gradient_cosine": (
+                    float(np.clip(
+                        (g1 / np.linalg.norm(g1)) @ (g2 / np.linalg.norm(g2)),
+                        -1.0, 1.0,
+                    ))
+                    if np.linalg.norm(g1) > 0 and np.linalg.norm(g2) > 0
+                    else None
+                ),
+                "min_norm_squared": min_norm_squared,
+            }
+
+        # No supplied weights: preserve the original objective.
+        if task_weights is None:
+            return L1 + L2, g1 + g2
+
+        # Supplied weights stay fixed throughout the optimizer call.
+        a1, a2 = task_weights
+        if task_normalizers is None:
+            raise ValueError("Fixed task normalizers are required with task weights")
+        n1, n2 = task_normalizers
+        if not all(np.isfinite(n) and n > 0 for n in (n1, n2)):
+            raise ValueError("Task normalizers must be positive and finite")
+        return (
+            2 * a1 * L1 / n1 + 2 * a2 * L2 / n2,
+            2 * a1 * g1 / n1 + 2 * a2 * g2 / n2,
+        )
 
     # def _violation(c_e, c_i):
     #     e = (
@@ -1152,7 +1243,52 @@ def notears_linear(X, lambda1, loss_type, tau, prior_knowledge=None, max_iter=10
         inner_attempt = 0
         while rho < rho_max:
             inner_attempt += 1
-            sol = sopt.minimize(_func, w_est, method='L-BFGS-B', jac=True, bounds=bnds, options={"maxls": 100, "ftol": 1e-15})
+            accepted_iteration = 0
+            diagnostics = _func(w_est, return_diagnostics=True)
+            fixed_weights = (diagnostics["a1"], diagnostics["a2"])
+            fixed_normalizers = (
+                diagnostics["normalizer_1"], diagnostics["normalizer_2"]
+            )
+            print("mtl_weight_selection:", json.dumps({
+                "loss_type": loss_type,
+                "outer_iter": outer_iter + 1,
+                "inner_attempt": inner_attempt,
+                "rho": float(rho),
+                "alpha": float(alpha),
+                "relative_prior_weight": (
+                    (fixed_weights[1] / fixed_normalizers[1])
+                    / (fixed_weights[0] / fixed_normalizers[0])
+                    if fixed_weights[0] > 0 else None
+                ),
+                **diagnostics,
+            }), flush=True)
+
+            def weighted_objective(w):
+                return _func(
+                    w, task_weights=fixed_weights,
+                    task_normalizers=fixed_normalizers,
+                )
+
+            def log_iteration(w):
+                nonlocal accepted_iteration
+                accepted_iteration += 1
+
+                diagnostics = _func(w, return_diagnostics=True)
+                print(
+                    f"loss_type={loss_type}, "
+                    f"outer_iter={outer_iter + 1}, "
+                    f"inner_attempt={inner_attempt}, "
+                    f"inner_iter={accepted_iteration}, "
+                    f"used_a1={fixed_weights[0]:.6e}, "
+                    f"used_a2={fixed_weights[1]:.6e}, "
+                    f"used_normalizer_1={fixed_normalizers[0]:.6e}, "
+                    f"used_normalizer_2={fixed_normalizers[1]:.6e}, "
+                    f"suggested_a1={diagnostics['a1']:.6e}, "
+                    f"suggested_a2={diagnostics['a2']:.6e}, "
+                    f"diagnostics={json.dumps(diagnostics)}",
+                    flush=True,
+                )
+            sol = sopt.minimize(weighted_objective, w_est, method='L-BFGS-B', jac=True, bounds=bnds, callback=log_iteration, options={"maxls": 100, "ftol": 1e-15})
 
             if not sol.success:
                 print("L-BFGS-B warning:", sol.message)
@@ -1232,9 +1368,9 @@ if __name__ == '__main__':
     print("B_true:", B_true)
     W_true = utils.simulate_parameter(B_true)
     if not args.c:
-        filename = f"linear_{args.p}_{graph_type}{args.e}_d{d}_{sem_type}_rate{args.r}_epsilon{args.ep}_seed{args.s}_tau{args.tau}_soft.json"
+        filename = f"linear_{args.p}_{graph_type}{args.e}_d{d}_{sem_type}_rate{args.r}_epsilon{args.ep}_seed{args.s}_tau{args.tau}_mtl.json"
     else:
-        filename = f"linear_{args.p}_{graph_type}{args.e}_d{d}_{sem_type}_rate{args.r}_epsilon10_seed{args.s}_compare.json"
+        filename = f"linear_{args.p}_{graph_type}{args.e}_d{d}_{sem_type}_rate{args.r}_epsilon10_seed{args.s}_mtl_compare.json"
 
     noise_scale = np.exp(np.random.uniform(np.log(0.5), np.log(2.0), size=d,))
     X = utils.simulate_linear_sem(W_true, n, sem_type, noise_scale)
