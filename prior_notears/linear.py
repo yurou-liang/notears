@@ -577,7 +577,8 @@ def _loss(W, X, loss_type):
         G_loss += np.linalg.inv(A).T
         return loss, G_loss.ravel()
 
-def notears_linear(X, lambda1, loss_type, tau, prior_knowledge=None, max_iter=100, h_tol=1e-8, rho_max=1e+16, w_threshold=0.3, sharpness=50.0, epsilon=1e-1, compare = False):
+def notears_linear(X, lambda1, loss_type, tau, prior_knowledge=None, max_iter=100, h_tol=1e-8, rho_max=1e+16, w_threshold=0.3, sharpness=50.0, epsilon=1e-1, compare = False,
+                   adam_lr=1e-3, adam_max_steps=10000, inner_gtol=1e-5):
     """Solve min_W L(W; X) + lambda1 ‖W‖_1 s.t. h(W) = 0 using augmented Lagrangian.
 
     Args:
@@ -1235,7 +1236,9 @@ def notears_linear(X, lambda1, loss_type, tau, prior_knowledge=None, max_iter=10
     tau = np.full(n_priors, tau, dtype=np.float64)
     weight_bound = 5.0
     bnds = [(0, 0) if i == j else (0, weight_bound) for _ in range(2) for i in range(d) for j in range(d)]
-
+    if adam_lr <= 0 or adam_max_steps < 1 or inner_gtol < 0:
+        raise ValueError("Invalid Adam learning rate, step budget, or tolerance")
+    inner_converged = False
     if loss_type in ('l2', 'likelihood'):
         X = X - np.mean(X, axis=0, keepdims=True)
     for outer_iter in range(max_iter):
@@ -1243,82 +1246,174 @@ def notears_linear(X, lambda1, loss_type, tau, prior_knowledge=None, max_iter=10
         inner_attempt = 0
         while rho < rho_max:
             inner_attempt += 1
-            accepted_iteration = 0
-            diagnostics = _func(w_est, return_diagnostics=True)
-            fixed_weights = (diagnostics["a1"], diagnostics["a2"])
-            fixed_normalizers = (
-                diagnostics["normalizer_1"], diagnostics["normalizer_2"]
+            # inner_attempt += 1
+            # accepted_iteration = 0
+            # diagnostics = _func(w_est, return_diagnostics=True)
+            # fixed_weights = (diagnostics["a1"], diagnostics["a2"])
+            # fixed_normalizers = (
+            #     diagnostics["normalizer_1"], diagnostics["normalizer_2"]
+            # )
+            # print("mtl_weight_selection:", json.dumps({
+            #     "loss_type": loss_type,
+            #     "outer_iter": outer_iter + 1,
+            #     "inner_attempt": inner_attempt,
+            #     "rho": float(rho),
+            #     "alpha": float(alpha),
+            #     "relative_prior_weight": (
+            #         (fixed_weights[1] / fixed_normalizers[1])
+            #         / (fixed_weights[0] / fixed_normalizers[0])
+            #         if fixed_weights[0] > 0 else None
+            #     ),
+            #     **diagnostics,
+            # }), flush=True)
+
+            # def weighted_objective(w):
+            #     return _func(
+            #         w, task_weights=fixed_weights,
+            #         task_normalizers=fixed_normalizers,
+            #     )
+
+            # def log_iteration(w):
+            #     nonlocal accepted_iteration
+            #     accepted_iteration += 1
+
+            #     diagnostics = _func(w, return_diagnostics=True)
+            #     print(
+            #         f"loss_type={loss_type}, "
+            #         f"outer_iter={outer_iter + 1}, "
+            #         f"inner_attempt={inner_attempt}, "
+            #         f"inner_iter={accepted_iteration}, "
+            #         f"used_a1={fixed_weights[0]:.6e}, "
+            #         f"used_a2={fixed_weights[1]:.6e}, "
+            #         f"used_normalizer_1={fixed_normalizers[0]:.6e}, "
+            #         f"used_normalizer_2={fixed_normalizers[1]:.6e}, "
+            #         f"suggested_a1={diagnostics['a1']:.6e}, "
+            #         f"suggested_a2={diagnostics['a2']:.6e}, "
+            #         f"diagnostics={json.dumps(diagnostics)}",
+            #         flush=True,
+            #     )
+            # sol = sopt.minimize(weighted_objective, w_est, method='L-BFGS-B', jac=True, bounds=bnds, callback=log_iteration, options={"maxls": 100, "ftol": 1e-15})
+
+            # if not sol.success:
+            #     print("L-BFGS-B warning:", sol.message)
+            #     print("rho:", rho)
+
+            # if not np.isfinite(sol.fun):
+            #     raise FloatingPointError(
+            #         "The augmented objective became non-finite"
+            #     )
+
+            # if not np.all(np.isfinite(sol.x)):
+            #     raise FloatingPointError(
+            #         "The optimizer returned non-finite weights"
+            #     )
+            
+            # diagnostics = {
+            #     "outer_iter": outer_iter + 1,
+            #     "inner_attempt": inner_attempt,
+            #     "success": bool(sol.success),
+            #     "status": int(sol.status),
+            #     "message": str(sol.message),
+            #     "nit": int(sol.nit),
+            #     "nfev": int(sol.nfev),
+            #     "objective": float(sol.fun),
+            #     "weight_change_inf": float(np.max(np.abs(_adj(sol.x) - _adj(w_est)))),
+            #     "rho": float(rho),
+            #     "alpha": float(alpha),
+            # }
+            # print("inner_solver:", json.dumps(diagnostics), flush=True)
+            # w_new = sol.x
+
+            parameter = torch.nn.Parameter(
+                torch.tensor(w_est.copy(), dtype=torch.float64)
             )
-            print("mtl_weight_selection:", json.dumps({
+            optimizer = torch.optim.Adam([parameter], lr=adam_lr)
+
+            lower = torch.tensor([b[0] for b in bnds], dtype=torch.float64)
+            upper = torch.tensor([b[1] for b in bnds], dtype=torch.float64)
+            inner_converged = False
+            adam_updates = 0
+
+            for step in range(adam_max_steps):
+                w_current = parameter.detach().numpy().copy()
+
+                # Recompute weights AND divisors at every Adam step.
+                diagnostics = _func(w_current, return_diagnostics=True)
+                weights = (diagnostics["a1"], diagnostics["a2"])
+                normalizers = (
+                    diagnostics["normalizer_1"],
+                    diagnostics["normalizer_2"],
+                )
+
+                value, gradient = _func(
+                    w_current,
+                    task_weights=weights,
+                    task_normalizers=normalizers,
+                )
+
+                if not np.isfinite(value) or not np.all(np.isfinite(gradient)):
+                    raise FloatingPointError("Non-finite Adam objective or gradient")
+
+                projected_gradient = w_current - np.clip(
+                    w_current - gradient,
+                    lower.numpy(),
+                    upper.numpy(),
+                )
+                projected_gradient_inf = float(np.max(np.abs(projected_gradient)))
+                print("adam_step:", json.dumps({
+                    "loss_type": loss_type,
+                    "outer_iter": outer_iter + 1,
+                    "inner_attempt": inner_attempt,
+                    "adam_updates": adam_updates,
+                    "rho": float(rho),
+                    "alpha": float(alpha),
+                    "objective": float(value),
+                    "projected_gradient_inf": projected_gradient_inf,
+                    **diagnostics,
+                }), flush=True)
+
+                if projected_gradient_inf <= inner_gtol:
+                    inner_converged = True
+                    break
+
+                optimizer.zero_grad(set_to_none=True)
+                parameter.grad = torch.as_tensor(
+                    gradient.copy(), dtype=parameter.dtype
+                )
+                optimizer.step()
+
+                with torch.no_grad():
+                    parameter.copy_(torch.clamp(parameter, min=lower, max=upper))
+                adam_updates += 1
+
+            w_new = parameter.detach().numpy().copy()
+
+            # Check the returned point as well, including the last budgeted update.
+            diagnostics = _func(w_new, return_diagnostics=True)
+            value, gradient = _func(
+                w_new,
+                task_weights=(diagnostics["a1"], diagnostics["a2"]),
+                task_normalizers=(diagnostics["normalizer_1"], diagnostics["normalizer_2"]),
+            )
+            if not np.isfinite(value) or not np.all(np.isfinite(gradient)):
+                raise FloatingPointError("Non-finite final Adam objective or gradient")
+            projected_gradient_inf = float(np.max(np.abs(
+                w_new - np.clip(w_new - gradient, lower.numpy(), upper.numpy())
+            )))
+            inner_converged = projected_gradient_inf <= inner_gtol
+
+            print("adam_inner_solver:", json.dumps({
                 "loss_type": loss_type,
                 "outer_iter": outer_iter + 1,
                 "inner_attempt": inner_attempt,
+                "adam_updates": adam_updates,
+                "stop_reason": "projected_stationarity" if inner_converged else "budget_exhausted",
+                "projected_gradient_inf": projected_gradient_inf,
+                "objective": float(value),
                 "rho": float(rho),
                 "alpha": float(alpha),
-                "relative_prior_weight": (
-                    (fixed_weights[1] / fixed_normalizers[1])
-                    / (fixed_weights[0] / fixed_normalizers[0])
-                    if fixed_weights[0] > 0 else None
-                ),
                 **diagnostics,
             }), flush=True)
-
-            def weighted_objective(w):
-                return _func(
-                    w, task_weights=fixed_weights,
-                    task_normalizers=fixed_normalizers,
-                )
-
-            def log_iteration(w):
-                nonlocal accepted_iteration
-                accepted_iteration += 1
-
-                diagnostics = _func(w, return_diagnostics=True)
-                print(
-                    f"loss_type={loss_type}, "
-                    f"outer_iter={outer_iter + 1}, "
-                    f"inner_attempt={inner_attempt}, "
-                    f"inner_iter={accepted_iteration}, "
-                    f"used_a1={fixed_weights[0]:.6e}, "
-                    f"used_a2={fixed_weights[1]:.6e}, "
-                    f"used_normalizer_1={fixed_normalizers[0]:.6e}, "
-                    f"used_normalizer_2={fixed_normalizers[1]:.6e}, "
-                    f"suggested_a1={diagnostics['a1']:.6e}, "
-                    f"suggested_a2={diagnostics['a2']:.6e}, "
-                    f"diagnostics={json.dumps(diagnostics)}",
-                    flush=True,
-                )
-            sol = sopt.minimize(weighted_objective, w_est, method='L-BFGS-B', jac=True, bounds=bnds, callback=log_iteration, options={"maxls": 100, "ftol": 1e-15})
-
-            if not sol.success:
-                print("L-BFGS-B warning:", sol.message)
-                print("rho:", rho)
-
-            if not np.isfinite(sol.fun):
-                raise FloatingPointError(
-                    "The augmented objective became non-finite"
-                )
-
-            if not np.all(np.isfinite(sol.x)):
-                raise FloatingPointError(
-                    "The optimizer returned non-finite weights"
-                )
-            
-            diagnostics = {
-                "outer_iter": outer_iter + 1,
-                "inner_attempt": inner_attempt,
-                "success": bool(sol.success),
-                "status": int(sol.status),
-                "message": str(sol.message),
-                "nit": int(sol.nit),
-                "nfev": int(sol.nfev),
-                "objective": float(sol.fun),
-                "weight_change_inf": float(np.max(np.abs(_adj(sol.x) - _adj(w_est)))),
-                "rho": float(rho),
-                "alpha": float(alpha),
-            }
-            print("inner_solver:", json.dumps(diagnostics), flush=True)
-            w_new = sol.x
             c_e_new = combined_equality_constraints(_adj(w_new))
             i_value_new = combined_inequality_constraints(_adj(w_new))
             c_i_new = np.maximum(epsilon - i_value_new, 0.0)
@@ -1340,7 +1435,7 @@ def notears_linear(X, lambda1, loss_type, tau, prior_knowledge=None, max_iter=10
             break
     W_est = _adj(w_est)
     W_est[np.abs(W_est) < w_threshold] = 0
-    return W_est, bool(sol.success)
+    return W_est, bool(inner_converged and h <= h_tol)
 
 
 
@@ -1368,7 +1463,7 @@ if __name__ == '__main__':
     print("B_true:", B_true)
     W_true = utils.simulate_parameter(B_true)
     if not args.c:
-        filename = f"linear_{args.p}_{graph_type}{args.e}_d{d}_{sem_type}_rate{args.r}_epsilon{args.ep}_seed{args.s}_tau{args.tau}_mtl.json"
+        filename = f"linear_{args.p}_{graph_type}{args.e}_d{d}_{sem_type}_rate{args.r}_epsilon{args.ep}_seed{args.s}_tau{args.tau}_mtl_adam.json"
     else:
         filename = f"linear_{args.p}_{graph_type}{args.e}_d{d}_{sem_type}_rate{args.r}_epsilon10_seed{args.s}_mtl_compare.json"
 
