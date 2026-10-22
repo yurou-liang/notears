@@ -1128,16 +1128,27 @@ def notears_linear(X, lambda1, loss_type, tau, prior_knowledge=None, max_iter=10
                     np.linalg.norm(a1 * normalized_g1 + a2 * normalized_g2) ** 2
                 )
             else:
-                weights, _ = MinNormSolver.find_min_norm_element([
-                    [torch.as_tensor(normalized_g1, dtype=torch.float64)],
-                    [torch.as_tensor(normalized_g2, dtype=torch.float64)],
-                ])
-                a1, a2 = weights
-                min_norm_squared = float(
-                    np.linalg.norm(
-                        a1 * normalized_g1 + a2 * normalized_g2
-                    ) ** 2
+                # weights, _ = MinNormSolver.find_min_norm_element([
+                #     [torch.as_tensor(normalized_g1, dtype=torch.float64)],
+                #     [torch.as_tensor(normalized_g2, dtype=torch.float64)],
+                # ])
+                # a1, a2 = weights
+                cosine = np.clip(
+                    normalized_g1 @ normalized_g2,
+                    -1.0, 1.0,
                 )
+
+                if cosine <= -1.0:
+                    # Explicit fallback: use the original task-1 gradient.
+                    a1 = norm1
+                    a2 = 0.0
+                else:
+                    a1 = a2 = 1.0 / np.sqrt(1.0 + cosine)       
+            min_norm_squared = float(
+                np.linalg.norm(
+                    a1 * normalized_g1 + a2 * normalized_g2
+                ) ** 2
+            )
 
             return {
                 "a1": float(a1),
@@ -1173,8 +1184,8 @@ def notears_linear(X, lambda1, loss_type, tau, prior_knowledge=None, max_iter=10
         if not all(np.isfinite(n) and n > 0 for n in (n1, n2)):
             raise ValueError("Task normalizers must be positive and finite")
         return (
-            2 * a1 * L1 / n1 + 2 * a2 * L2 / n2,
-            2 * a1 * g1 / n1 + 2 * a2 * g2 / n2,
+            a1 * (L1 / n1) + a2 * (L2 / n2),
+            a1 * (g1 / n1) + a2 * (g2 / n2),
         )
 
     # def _violation(c_e, c_i):
