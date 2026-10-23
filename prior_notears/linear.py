@@ -1181,11 +1181,12 @@ def notears_linear(X, lambda1, loss_type, tau, prior_knowledge=None, max_iter=10
         if task_normalizers is None:
             raise ValueError("Fixed task normalizers are required with task weights")
         n1, n2 = task_normalizers
+        prior_active = float(L2 > 0.1)
         if not all(np.isfinite(n) and n > 0 for n in (n1, n2)):
             raise ValueError("Task normalizers must be positive and finite")
         return (
-            a1 * (L1 / n1) + a2 * (L2 / n2),
-            a1 * (g1 / n1) + a2 * (g2 / n2),
+            a1 * (L1 / n1) + a2 * prior_active * (L2 / n2),
+            a1 * (g1 / n1) + a2 * prior_active * (g2 / n2),
         )
 
     # def _violation(c_e, c_i):
@@ -1371,18 +1372,6 @@ def notears_linear(X, lambda1, loss_type, tau, prior_knowledge=None, max_iter=10
                     upper.numpy(),
                 )
                 projected_gradient_inf = float(np.max(np.abs(projected_gradient)))
-                print("adam_step:", json.dumps({
-                    "loss_type": loss_type,
-                    "outer_iter": outer_iter + 1,
-                    "inner_attempt": inner_attempt,
-                    "adam_updates": adam_updates,
-                    "rho": float(rho),
-                    "alpha": float(alpha),
-                    "objective": float(value),
-                    "projected_gradient_inf": projected_gradient_inf,
-                    **diagnostics,
-                }), flush=True)
-
                 if projected_gradient_inf <= inner_gtol:
                     inner_converged = True
                     break
@@ -1412,27 +1401,27 @@ def notears_linear(X, lambda1, loss_type, tau, prior_knowledge=None, max_iter=10
                 w_new - np.clip(w_new - gradient, lower.numpy(), upper.numpy())
             )))
             inner_converged = projected_gradient_inf <= inner_gtol
-
-            print("adam_inner_solver:", json.dumps({
-                "loss_type": loss_type,
-                "outer_iter": outer_iter + 1,
-                "inner_attempt": inner_attempt,
-                "adam_updates": adam_updates,
-                "stop_reason": "projected_stationarity" if inner_converged else "budget_exhausted",
-                "projected_gradient_inf": projected_gradient_inf,
-                "objective": float(value),
-                "rho": float(rho),
-                "alpha": float(alpha),
-                **diagnostics,
-            }), flush=True)
-            c_e_new = combined_equality_constraints(_adj(w_new))
-            i_value_new = combined_inequality_constraints(_adj(w_new))
-            c_i_new = np.maximum(epsilon - i_value_new, 0.0)
-            ###############################
+            h_new, _ = _h(_adj(w_new))
+            cosine = diagnostics["gradient_cosine"]
+            cosine_text = "undefined" if cosine is None else f"{cosine:.3f}"
+            stop_reason = "stationary" if inner_converged else "budget_exhausted"
+            print(
+                f"Adam [{loss_type}] stage={outer_iter + 1} attempt={inner_attempt} "
+                f"steps={adam_updates} stop={stop_reason} "
+                f"h={h_new:.3e} rho={rho:.1e} "
+                f"proj_grad={projected_gradient_inf:.3e} "
+                f"L1={diagnostics['L1']:.4g} L2={diagnostics['L2']:.4g} "
+                f"a=({diagnostics['a1']:.3g},{diagnostics['a2']:.3g}) "
+                f"grad_norms=({diagnostics['norm_g1']:.3e},"
+                f"{diagnostics['norm_g2']:.3e}) cos={cosine_text}",
+                flush=True,
+            )
+            W_new = _adj(w_new)
+            c_e_new = combined_equality_constraints(W_new, coefficient=None)
+            i_value_new = combined_inequality_constraints(W_new, coefficient=None)
+            c_i_new = softplus(epsilon - i_value_new, sharpness)
             print("equality constraints:", c_e_new, flush=True)
             print("inequality constraints:", c_i_new, flush=True)
-            ###############################
-            h_new, _ = _h(_adj(w_new))
             if h_new > 0.25 * h:
                 rho *= 10
             else:
@@ -1471,7 +1460,7 @@ if __name__ == '__main__':
     utils.set_random_seed(args.s)
     n, d, s0, graph_type, sem_type = 10*args.d, args.d, args.e*args.d, args.g, args.n
     B_true = utils.simulate_dag(d, s0, graph_type)
-    print("B_true:", B_true)
+    print(f"Run: seed={args.s} d={d} graph={graph_type} edges={s0} tau={args.tau}", flush=True)
     W_true = utils.simulate_parameter(B_true)
     if not args.c:
         filename = f"linear_{args.p}_{graph_type}{args.e}_d{d}_{sem_type}_rate{args.r}_epsilon{args.ep}_seed{args.s}_tau{args.tau}_mtl_adam.json"
@@ -1530,7 +1519,7 @@ if __name__ == '__main__':
                 prior_type=args.p,
             )
 
-        print("prior_knowledge_ll:", prior_knowledge_ll)
+        print("Likelihood prior counts:", {key: len(pairs) for key, pairs in prior_knowledge_ll.items()}, flush=True)
         constraint_values_no_prior_ll = evaluate_prior_values(W_est_no_prior_ll, prior_knowledge_ll, args.t)
         satisfied_no_prior_ll, satisfied_percentage_no_prior_ll = utils.evaluate_prior_knowledge(W_est_no_prior_ll, prior_knowledge_ll)
         print(f'>>> Evaluation with prior knowledge and likelihood loss <<<')
@@ -1603,7 +1592,7 @@ if __name__ == '__main__':
                     prior_type=args.p,
                 )
             # prior_knowledge_l2 = {"exist_edge_pairs": [(7, 0), (7, 2)]}
-            print("prior_knowledge_l2:", prior_knowledge_l2)
+            print("L2 prior counts:", {key: len(pairs) for key, pairs in prior_knowledge_l2.items()}, flush=True)
             constraint_values_no_prior_l2 = evaluate_prior_values(W_est_no_prior_l2, prior_knowledge_l2, args.t)
             satisfied_no_prior_l2, satisfied_percentage_no_prior_l2 = utils.evaluate_prior_knowledge(W_est_no_prior_l2, prior_knowledge_l2)
             print(f'>>> Evaluation with prior knowledge and l2 loss <<<')
@@ -1697,6 +1686,15 @@ if __name__ == '__main__':
     with output_path.open("w") as file:
         json.dump(results, file, indent=4)
 
+    for label in ("no_prior_ll", "prior_ll", "no_prior_l2", "prior_l2"):
+        metrics = results.get(f"acc_{label}")
+        if isinstance(metrics, dict):
+            satisfaction = results.get(f"satisfied_percentage_{label}", float("nan"))
+            print(
+                f"Result [{label}]: F1={metrics['f1']:.4f} "
+                f"SHD={metrics['shd']} satisfaction={satisfaction:.1f}%",
+                flush=True,
+            )
     print(f"Results saved to: {output_path}")
 
 #### check gradient of prior knowledge constraints
