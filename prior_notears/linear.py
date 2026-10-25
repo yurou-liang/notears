@@ -578,7 +578,7 @@ def _loss(W, X, loss_type):
         return loss, G_loss.ravel()
 
 def notears_linear(X, lambda1, loss_type, tau, prior_knowledge=None, max_iter=100, h_tol=1e-8, rho_max=1e+16, w_threshold=0.3, sharpness=50.0, epsilon=1e-1, compare = False,
-                   adam_lr=1e-3, adam_max_steps=10000, inner_gtol=1e-5):
+                   adam_lr=1e-3, adam_max_steps=10000, inner_param_tol=1e-5):
     """Solve min_W L(W; X) + lambda1 ‖W‖_1 s.t. h(W) = 0 using augmented Lagrangian.
 
     Args:
@@ -593,6 +593,8 @@ def notears_linear(X, lambda1, loss_type, tau, prior_knowledge=None, max_iter=10
         w_threshold (float): drop edge if |weight| < threshold
         sharpness (float): softplus sharpness parameter
         epsilon (float): inequality constraint tolerance
+        inner_param_tol (float): relative parameter-change tolerance, checked
+            every 100 Adam updates; stop after three consecutive stable checks
 
     Returns:
         W_est (np.ndarray): [d, d] estimated DAG
@@ -1067,7 +1069,7 @@ def notears_linear(X, lambda1, loss_type, tau, prior_knowledge=None, max_iter=10
 
     def _func(w, return_diagnostics=False, task_weights=None,
               task_normalizers=None):
-        """Evaluate value and gradient of augmented Lagrangian for doubled variables ([2 d^2] array)."""
+        """Evaluate value and learning direction of augmented Lagrangian for doubled variables ([2 d^2] array)."""
         W = _adj(w)
         loss, G_loss = _loss(W)
         h, G_h = _h(W)
@@ -1248,7 +1250,7 @@ def notears_linear(X, lambda1, loss_type, tau, prior_knowledge=None, max_iter=10
     tau = np.full(n_priors, tau, dtype=np.float64)
     weight_bound = 5.0
     bnds = [(0, 0) if i == j else (0, weight_bound) for _ in range(2) for i in range(d) for j in range(d)]
-    if adam_lr <= 0 or adam_max_steps < 1 or inner_gtol < 0:
+    if adam_lr <= 0 or adam_max_steps < 1 or inner_param_tol < 0:
         raise ValueError("Invalid Adam learning rate, step budget, or tolerance")
     inner_converged = False
     if loss_type in ('l2', 'likelihood'):
@@ -1345,6 +1347,9 @@ def notears_linear(X, lambda1, loss_type, tau, prior_knowledge=None, max_iter=10
             upper = torch.tensor([b[1] for b in bnds], dtype=torch.float64)
             inner_converged = False
             adam_updates = 0
+            checkpoint_w = w_est.copy()
+            stable_checks = 0
+            relative_parameter_change = None
 
             for step in range(adam_max_steps):
                 w_current = parameter.detach().numpy().copy()
@@ -1366,16 +1371,6 @@ def notears_linear(X, lambda1, loss_type, tau, prior_knowledge=None, max_iter=10
                 if not np.isfinite(value) or not np.all(np.isfinite(gradient)):
                     raise FloatingPointError("Non-finite Adam objective or gradient")
 
-                projected_gradient = w_current - np.clip(
-                    w_current - gradient,
-                    lower.numpy(),
-                    upper.numpy(),
-                )
-                projected_gradient_inf = float(np.max(np.abs(projected_gradient)))
-                if projected_gradient_inf <= inner_gtol:
-                    inner_converged = True
-                    break
-
                 optimizer.zero_grad(set_to_none=True)
                 parameter.grad = torch.as_tensor(
                     gradient.copy(), dtype=parameter.dtype
@@ -1385,10 +1380,24 @@ def notears_linear(X, lambda1, loss_type, tau, prior_knowledge=None, max_iter=10
                 with torch.no_grad():
                     parameter.copy_(torch.clamp(parameter, min=lower, max=upper))
                 adam_updates += 1
+                if adam_updates % 100 == 0:
+                    checkpoint_new = parameter.detach().numpy().copy()
+                    relative_parameter_change = float(
+                        np.linalg.norm(checkpoint_new - checkpoint_w)
+                        / max(1.0, np.linalg.norm(checkpoint_w))
+                    )
+                    stable_checks = (
+                        stable_checks + 1
+                        if relative_parameter_change < inner_param_tol else 0
+                    )
+                    checkpoint_w = checkpoint_new
+                    if stable_checks >= 3:
+                        inner_converged = True
+                        break
 
             w_new = parameter.detach().numpy().copy()
 
-            # Check the returned point as well, including the last budgeted update.
+            # Evaluate diagnostics at the returned point.
             diagnostics = _func(w_new, return_diagnostics=True)
             value, gradient = _func(
                 w_new,
@@ -1397,19 +1406,19 @@ def notears_linear(X, lambda1, loss_type, tau, prior_knowledge=None, max_iter=10
             )
             if not np.isfinite(value) or not np.all(np.isfinite(gradient)):
                 raise FloatingPointError("Non-finite final Adam objective or gradient")
-            projected_gradient_inf = float(np.max(np.abs(
-                w_new - np.clip(w_new - gradient, lower.numpy(), upper.numpy())
-            )))
-            inner_converged = projected_gradient_inf <= inner_gtol
             h_new, _ = _h(_adj(w_new))
             cosine = diagnostics["gradient_cosine"]
             cosine_text = "undefined" if cosine is None else f"{cosine:.3f}"
-            stop_reason = "stationary" if inner_converged else "budget_exhausted"
+            stop_reason = "parameter_stable" if inner_converged else "budget_exhausted"
+            change_text = (
+                "unchecked" if relative_parameter_change is None
+                else f"{relative_parameter_change:.3e}"
+            )
             print(
                 f"Adam [{loss_type}] stage={outer_iter + 1} attempt={inner_attempt} "
                 f"steps={adam_updates} stop={stop_reason} "
                 f"h={h_new:.3e} rho={rho:.1e} "
-                f"proj_grad={projected_gradient_inf:.3e} "
+                f"param_change={change_text} stable_checks={stable_checks}/3 "
                 f"L1={diagnostics['L1']:.4g} L2={diagnostics['L2']:.4g} "
                 f"a=({diagnostics['a1']:.3g},{diagnostics['a2']:.3g}) "
                 f"grad_norms=({diagnostics['norm_g1']:.3e},"
