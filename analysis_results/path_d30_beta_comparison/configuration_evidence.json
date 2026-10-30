@@ -1,0 +1,254 @@
+{
+  "interpretation": "beta is the multiplier on the normalized prior direction, not Softplus sharpness or Adam momentum beta",
+  "current_source_HEAD": "e4757b2917dff0d291025b917778fa966e18165e",
+  "current_source_sha256": "317221564abf5f0a2219e30fe71695709ea62cf3f7e3adfc3df655bb238b76ad",
+  "current_source": {
+    "softplus": true,
+    "original_gate": true,
+    "prior_multiplier_half": true,
+    "defaults": {
+      "epsilon": 0.1,
+      "sharpness": 50,
+      "adam_lr": 0.001,
+      "adam_max_steps": 10000,
+      "inner_param_tol": 1e-05,
+      "w_threshold": 0.3,
+      "max_iter": 100
+    }
+  },
+  "historical_provenance_limit": "JSONs contain no beta/config/lr/budget/threshold metadata or immutable source revision. Current source vs HEAD changes only the prior multiplier in scalar and direction; this confirms the intended code change, not that every archived run used that exact source and defaults.",
+  "filename_evidence": {
+    "epsilon": 0.1,
+    "tau": 1.0,
+    "d": 30
+  },
+  "missing_runs": [],
+  "matched_valid_seeds": {
+    "ll": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9
+    ],
+    "l2": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9
+    ]
+  },
+  "log_summary": [
+    {
+      "beta": "1",
+      "seed": 0,
+      "present": true,
+      "has_10000_step_solve": true,
+      "max_observed_steps": 10000,
+      "contains_parameter_stability": false,
+      "completed": true,
+      "traceback": false
+    },
+    {
+      "beta": "1",
+      "seed": 1,
+      "present": true,
+      "has_10000_step_solve": true,
+      "max_observed_steps": 10000,
+      "contains_parameter_stability": false,
+      "completed": true,
+      "traceback": false
+    },
+    {
+      "beta": "1",
+      "seed": 2,
+      "present": true,
+      "has_10000_step_solve": true,
+      "max_observed_steps": 10000,
+      "contains_parameter_stability": false,
+      "completed": true,
+      "traceback": false
+    },
+    {
+      "beta": "1",
+      "seed": 3,
+      "present": true,
+      "has_10000_step_solve": true,
+      "max_observed_steps": 10000,
+      "contains_parameter_stability": false,
+      "completed": true,
+      "traceback": false
+    },
+    {
+      "beta": "1",
+      "seed": 4,
+      "present": true,
+      "has_10000_step_solve": true,
+      "max_observed_steps": 10000,
+      "contains_parameter_stability": false,
+      "completed": true,
+      "traceback": false
+    },
+    {
+      "beta": "1",
+      "seed": 5,
+      "present": true,
+      "has_10000_step_solve": true,
+      "max_observed_steps": 10000,
+      "contains_parameter_stability": false,
+      "completed": true,
+      "traceback": false
+    },
+    {
+      "beta": "1",
+      "seed": 6,
+      "present": true,
+      "has_10000_step_solve": true,
+      "max_observed_steps": 10000,
+      "contains_parameter_stability": false,
+      "completed": true,
+      "traceback": false
+    },
+    {
+      "beta": "1",
+      "seed": 7,
+      "present": true,
+      "has_10000_step_solve": true,
+      "max_observed_steps": 10000,
+      "contains_parameter_stability": false,
+      "completed": true,
+      "traceback": false
+    },
+    {
+      "beta": "1",
+      "seed": 8,
+      "present": true,
+      "has_10000_step_solve": true,
+      "max_observed_steps": 10000,
+      "contains_parameter_stability": false,
+      "completed": true,
+      "traceback": false
+    },
+    {
+      "beta": "1",
+      "seed": 9,
+      "present": true,
+      "has_10000_step_solve": true,
+      "max_observed_steps": 10000,
+      "contains_parameter_stability": true,
+      "completed": true,
+      "traceback": false
+    },
+    {
+      "beta": "0.5",
+      "seed": 0,
+      "present": true,
+      "has_10000_step_solve": true,
+      "max_observed_steps": 10000,
+      "contains_parameter_stability": false,
+      "completed": true,
+      "traceback": false
+    },
+    {
+      "beta": "0.5",
+      "seed": 1,
+      "present": true,
+      "has_10000_step_solve": true,
+      "max_observed_steps": 10000,
+      "contains_parameter_stability": false,
+      "completed": true,
+      "traceback": false
+    },
+    {
+      "beta": "0.5",
+      "seed": 2,
+      "present": true,
+      "has_10000_step_solve": true,
+      "max_observed_steps": 10000,
+      "contains_parameter_stability": false,
+      "completed": true,
+      "traceback": false
+    },
+    {
+      "beta": "0.5",
+      "seed": 3,
+      "present": true,
+      "has_10000_step_solve": true,
+      "max_observed_steps": 10000,
+      "contains_parameter_stability": false,
+      "completed": true,
+      "traceback": false
+    },
+    {
+      "beta": "0.5",
+      "seed": 4,
+      "present": true,
+      "has_10000_step_solve": true,
+      "max_observed_steps": 10000,
+      "contains_parameter_stability": false,
+      "completed": true,
+      "traceback": false
+    },
+    {
+      "beta": "0.5",
+      "seed": 5,
+      "present": true,
+      "has_10000_step_solve": true,
+      "max_observed_steps": 10000,
+      "contains_parameter_stability": true,
+      "completed": true,
+      "traceback": false
+    },
+    {
+      "beta": "0.5",
+      "seed": 6,
+      "present": true,
+      "has_10000_step_solve": true,
+      "max_observed_steps": 10000,
+      "contains_parameter_stability": true,
+      "completed": true,
+      "traceback": false
+    },
+    {
+      "beta": "0.5",
+      "seed": 7,
+      "present": true,
+      "has_10000_step_solve": true,
+      "max_observed_steps": 10000,
+      "contains_parameter_stability": false,
+      "completed": true,
+      "traceback": false
+    },
+    {
+      "beta": "0.5",
+      "seed": 8,
+      "present": true,
+      "has_10000_step_solve": true,
+      "max_observed_steps": 10000,
+      "contains_parameter_stability": false,
+      "completed": true,
+      "traceback": false
+    },
+    {
+      "beta": "0.5",
+      "seed": 9,
+      "present": true,
+      "has_10000_step_solve": true,
+      "max_observed_steps": 10000,
+      "contains_parameter_stability": false,
+      "completed": true,
+      "traceback": false
+    }
+  ]
+}

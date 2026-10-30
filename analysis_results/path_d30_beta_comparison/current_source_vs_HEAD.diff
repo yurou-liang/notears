@@ -1,0 +1,15 @@
+diff --git a/prior_notears/linear.py b/prior_notears/linear.py
+index 9fe2cf6..b0fd82b 100644
+--- a/prior_notears/linear.py
++++ b/prior_notears/linear.py
+@@ -1187,8 +1187,8 @@ def notears_linear(X, lambda1, loss_type, tau, prior_knowledge=None, max_iter=10
+         if not all(np.isfinite(n) and n > 0 for n in (n1, n2)):
+             raise ValueError("Task normalizers must be positive and finite")
+         return (
+-            a1 * (L1 / n1) + a2 * prior_active * (L2 / n2),
+-            a1 * (g1 / n1) + a2 * prior_active * (g2 / n2),
++            a1 * (L1 / n1) + 0.5 * a2 * prior_active * (L2 / n2),
++            a1 * (g1 / n1) + 0.5 * a2 * prior_active * (g2 / n2),
+         )
+ 
+     # def _violation(c_e, c_i):

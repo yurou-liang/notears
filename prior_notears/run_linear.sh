@@ -47,7 +47,7 @@ wait_for_one() {
     return 0
 }
 
-NODE_COUNTS=(10)
+NODE_COUNTS=(10 20 40 50)
 EPSILONS=(0.1)
 # TAU_SETTINGS=(1.0 3.0 10.0 15.0) #"1.0 0.5" "1.0 0.0"
 NOISE_TYPES=(gauss)
@@ -56,8 +56,8 @@ PRIOR_TYPES=(
     # forbid_edge_pairs
     # forbid_path_pairs
     # forbid_trek_pairs
-    exist_edge_pairs
-    # exist_path_pairs
+    # exist_edge_pairs
+    exist_path_pairs
     # exist_trek_pairs
     # mix
 )
@@ -95,7 +95,7 @@ for seed in {0..9}; do
                         mkdir -p "${output_dir}" "${log_dir}"
 
                         (
-                            "${PYTHON_BIN}" -u -m prior_notears.linear \
+                            "${PYTHON_BIN}" -u -m prior_notears.linear_cagrad \
                                 --seed "${seed}" \
                                 --num_nodes "${d}" \
                                 --num_edges_per_node "${edge_factor}" \
@@ -105,6 +105,9 @@ for seed in {0..9}; do
                                 --prior_type "${prior_type}" \
                                 --prior_rate "${PRIOR_RATE}" \
                                 --epsilon "${epsilon}" \
+                                --cagrad-c 0.2 \
+                                --trace-dir ./outputs/cagrad_checkpoints \
+                                --trace-every 100 \
                                 > "${log_file}" 2>&1
 
                             if [[ ! -f "${result_file}" ]]; then

@@ -1,0 +1,30 @@
+[
+  {
+    "method": "lbfgsb_soft",
+    "d": 40,
+    "seed": 3,
+    "loss": "ll",
+    "error": "Matrix is not a DAG"
+  },
+  {
+    "method": "lbfgsb_soft",
+    "d": 50,
+    "seed": 0,
+    "loss": "ll",
+    "error": "Matrix is not a DAG"
+  },
+  {
+    "method": "lbfgsb_soft",
+    "d": 40,
+    "seed": 4,
+    "loss": "ll",
+    "error": "Matrix is not a DAG"
+  },
+  {
+    "method": "lbfgsb_soft",
+    "d": 50,
+    "seed": 3,
+    "loss": "ll",
+    "error": "Matrix is not a DAG"
+  }
+]

@@ -1,0 +1,122 @@
+[
+  {
+    "file": "linear_exist_path_pairs_modified_mtl/linear_exist_path_pairs_ER1_d30_gauss_rate0.5_epsilon0.1_seed6_tau1.0_mtl_adam.json",
+    "sha256": "658e23a98d414b3e12836b4fe66d5603d54f2eadcb06872ea28197c2846aa0cd"
+  },
+  {
+    "file": "linear_exist_path_pairs_modified_mtl/linear_exist_path_pairs_ER1_d30_gauss_rate0.5_epsilon0.1_seed2_tau1.0_mtl_adam.json",
+    "sha256": "5696830cea06ce7d28faf1e02d46381f8f1b466cf7fde8924b959aac36c08438"
+  },
+  {
+    "file": "linear_exist_path_pairs_modified_mtl/linear_exist_path_pairs_ER1_d30_gauss_rate0.5_epsilon0.1_seed9_tau1.0_mtl_adam.json",
+    "sha256": "c8dab27f01eccbc1a4e584799de457c4f707990769e53f64bc4b752d5703b81b"
+  },
+  {
+    "file": "linear_exist_path_pairs_modified_mtl/linear_exist_path_pairs_ER1_d30_gauss_rate0.5_epsilon0.1_seed5_tau1.0_mtl_adam.json",
+    "sha256": "a34b7ccddcfb4ad449b5bfd175385651a6d58e9d6bfa52e16a0222ca283ee260"
+  },
+  {
+    "file": "linear_exist_path_pairs_modified_mtl/linear_exist_path_pairs_ER1_d30_gauss_rate0.5_epsilon0.1_seed8_tau1.0_mtl_adam.json",
+    "sha256": "dfe9a38b11c704ca52457f16cc3fa445ba63789107c28765ce3d4c8a38aa7bd2"
+  },
+  {
+    "file": "linear_exist_path_pairs_modified_mtl/linear_exist_path_pairs_ER1_d30_gauss_rate0.5_epsilon0.1_seed1_tau1.0_mtl_adam.json",
+    "sha256": "bea9ef57d0f9d622ac4b637fc6c56ba6e5c182507f50cce6ea777dfa3984e266"
+  },
+  {
+    "file": "linear_exist_path_pairs_modified_mtl/linear_exist_path_pairs_ER1_d30_gauss_rate0.5_epsilon0.1_seed4_tau1.0_mtl_adam.json",
+    "sha256": "07c30b220a54acb199dc7904010119354bc5522069d7bc0b713a98dad2916fa4"
+  },
+  {
+    "file": "linear_exist_path_pairs_modified_mtl/linear_exist_path_pairs_ER1_d30_gauss_rate0.5_epsilon0.1_seed7_tau1.0_mtl_adam.json",
+    "sha256": "d7e4d6c3b9ad50ee27c386ad4e2e8f19814b0d2647770581b85982bf267b3f45"
+  },
+  {
+    "file": "linear_exist_path_pairs_modified_mtl/linear_exist_path_pairs_ER1_d30_gauss_rate0.5_epsilon0.1_seed3_tau1.0_mtl_adam.json",
+    "sha256": "acb15bf5ac65f1fc9c58049eba511257de9ed139151def6cf4fdced4b40d0d9b"
+  },
+  {
+    "file": "linear_exist_path_pairs_modified_mtl/linear_exist_path_pairs_ER1_d30_gauss_rate0.5_epsilon0.1_seed0_tau1.0_mtl_adam.json",
+    "sha256": "6a23ba270fbb8ea6be75fce5d729375f0c99df388378e82ae6de85f98dae952a"
+  },
+  {
+    "file": "linear_exist_path_pairs_adam_soft/linear_exist_path_pairs_ER1_d30_gauss_rate0.5_epsilon0.1_seed6_tau1.0_mtl_adam.json",
+    "sha256": "73a38450a9d0445b8ffc2a15f61719bb99d47d883bd51edff5a607f22caacdae"
+  },
+  {
+    "file": "linear_exist_path_pairs_adam_soft/linear_exist_path_pairs_ER1_d30_gauss_rate0.5_epsilon0.1_seed2_tau1.0_mtl_adam.json",
+    "sha256": "c7696dd78b6db2f0080c95076ce9f9e0d3d8b98105663a9e8842172eace97544"
+  },
+  {
+    "file": "linear_exist_path_pairs_adam_soft/linear_exist_path_pairs_ER1_d30_gauss_rate0.5_epsilon0.1_seed9_tau1.0_mtl_adam.json",
+    "sha256": "875e4cf7d420c8bf699b52dcab83e37f8068a32abd73f962e2b792256b30a1e9"
+  },
+  {
+    "file": "linear_exist_path_pairs_adam_soft/linear_exist_path_pairs_ER1_d30_gauss_rate0.5_epsilon0.1_seed5_tau1.0_mtl_adam.json",
+    "sha256": "39909ed688583cac5426be8ae808290d5304508e75b7c952e561064a0f21e03b"
+  },
+  {
+    "file": "linear_exist_path_pairs_adam_soft/linear_exist_path_pairs_ER1_d30_gauss_rate0.5_epsilon0.1_seed8_tau1.0_mtl_adam.json",
+    "sha256": "49cb7bb822547475a9e8fcb1f5792588cec943b77389e5c27f6cad7094406a3d"
+  },
+  {
+    "file": "linear_exist_path_pairs_adam_soft/linear_exist_path_pairs_ER1_d30_gauss_rate0.5_epsilon0.1_seed1_tau1.0_mtl_adam.json",
+    "sha256": "8554883507664c3cd3e03ccff501cedd459457a94a34db8e314318e3c9089d09"
+  },
+  {
+    "file": "linear_exist_path_pairs_adam_soft/linear_exist_path_pairs_ER1_d30_gauss_rate0.5_epsilon0.1_seed4_tau1.0_mtl_adam.json",
+    "sha256": "9cea9735b9a65557a86ac376124d28e851a71bc42972e7ef2b5a5b7c2083b0d2"
+  },
+  {
+    "file": "linear_exist_path_pairs_adam_soft/linear_exist_path_pairs_ER1_d30_gauss_rate0.5_epsilon0.1_seed7_tau1.0_mtl_adam.json",
+    "sha256": "d7d90a7e76a349dc71485df81e4e3f98f440b124e880960162cdab9e3bdb8409"
+  },
+  {
+    "file": "linear_exist_path_pairs_adam_soft/linear_exist_path_pairs_ER1_d30_gauss_rate0.5_epsilon0.1_seed3_tau1.0_mtl_adam.json",
+    "sha256": "3dcae23290a6085843c9ab939dba2d0231be184f95dc233163c75d1cae57104b"
+  },
+  {
+    "file": "linear_exist_path_pairs_adam_soft/linear_exist_path_pairs_ER1_d30_gauss_rate0.5_epsilon0.1_seed0_tau1.0_mtl_adam.json",
+    "sha256": "95e29f739d701cabad2b42499f9317f28ba2d40d8176bd23cec8dae67945bce3"
+  },
+  {
+    "file": "linear_exist_path_pairs_soft/linear_exist_path_pairs_ER1_d30_gauss_rate0.5_epsilon0.1_seed1_tau1.0_soft.json",
+    "sha256": "6387c39c2f00a6496698b7707fc4c8841c1ff1e51999fb95822412e117f3b82e"
+  },
+  {
+    "file": "linear_exist_path_pairs_soft/linear_exist_path_pairs_ER1_d30_gauss_rate0.5_epsilon0.1_seed2_tau1.0_soft.json",
+    "sha256": "2c761f8a707769bd814641a3e8cdef5c3dab30e3c940df2db0b609ce53a98d81"
+  },
+  {
+    "file": "linear_exist_path_pairs_soft/linear_exist_path_pairs_ER1_d30_gauss_rate0.5_epsilon0.1_seed3_tau1.0_soft.json",
+    "sha256": "52139ddbc56ed5594e541457a3512ba725c6c32eca262127742798c5e73e92c1"
+  },
+  {
+    "file": "linear_exist_path_pairs_soft/linear_exist_path_pairs_ER1_d30_gauss_rate0.5_epsilon0.1_seed7_tau1.0_soft.json",
+    "sha256": "c0cad9933a6fe4ebbe63d6234c40ccc912896d20014e2b08cba09b35e9c6c23c"
+  },
+  {
+    "file": "linear_exist_path_pairs_soft/linear_exist_path_pairs_ER1_d30_gauss_rate0.5_epsilon0.1_seed6_tau1.0_soft.json",
+    "sha256": "cda5a197d58988d9577a9ca570b682fde38c5561a4dcdd2957240dc5e9729200"
+  },
+  {
+    "file": "linear_exist_path_pairs_soft/linear_exist_path_pairs_ER1_d30_gauss_rate0.5_epsilon0.1_seed9_tau1.0_soft.json",
+    "sha256": "62b0730474a702c2f96791b3614f28a4c5a25f3acde9fdbf985d59846210f2f4"
+  },
+  {
+    "file": "linear_exist_path_pairs_soft/linear_exist_path_pairs_ER1_d30_gauss_rate0.5_epsilon0.1_seed4_tau1.0_soft.json",
+    "sha256": "db13c90c015f77fdac334fbed9a09068f4f4b2a7caa6176875983f9646649887"
+  },
+  {
+    "file": "linear_exist_path_pairs_soft/linear_exist_path_pairs_ER1_d30_gauss_rate0.5_epsilon0.1_seed5_tau1.0_soft.json",
+    "sha256": "c82b8c3ff6fd296d7cb32d540d86f41f65f57523d067dc4f8be76710845085bf"
+  },
+  {
+    "file": "linear_exist_path_pairs_soft/linear_exist_path_pairs_ER1_d30_gauss_rate0.5_epsilon0.1_seed0_tau1.0_soft.json",
+    "sha256": "2206c4d6fd3dddbaa2da5aee17b2bb28ae839d207a2ac18a966382ab9fe94600"
+  },
+  {
+    "file": "linear_exist_path_pairs_soft/linear_exist_path_pairs_ER1_d30_gauss_rate0.5_epsilon0.1_seed8_tau1.0_soft.json",
+    "sha256": "c33faa1a478570928ed1ec9e6fe4eee595c76ffe4da68b955dd98b32b395f160"
+  }
+]

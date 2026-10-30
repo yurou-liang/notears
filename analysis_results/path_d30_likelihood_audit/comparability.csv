@@ -1,0 +1,11 @@
+seed,available_methods,B_true_exact_match,W_true_exact_match,X_exact_match,X_std_exact_match,prior_knowledge_ll_exact_match,threshold_match,all_priors_true
+0,"adam_mtl,adam_soft,lbfgsb_soft",True,True,True,True,True,not independently verifiable; no per-run threshold metadata,True
+1,"adam_mtl,adam_soft,lbfgsb_soft",True,True,True,True,True,not independently verifiable; no per-run threshold metadata,True
+2,"adam_mtl,adam_soft,lbfgsb_soft",True,True,True,True,True,not independently verifiable; no per-run threshold metadata,True
+3,"adam_mtl,adam_soft,lbfgsb_soft",True,True,True,True,True,not independently verifiable; no per-run threshold metadata,True
+4,"adam_mtl,adam_soft,lbfgsb_soft",True,True,True,True,True,not independently verifiable; no per-run threshold metadata,True
+5,"adam_mtl,adam_soft,lbfgsb_soft",True,True,True,True,True,not independently verifiable; no per-run threshold metadata,True
+6,"adam_mtl,adam_soft,lbfgsb_soft",True,True,True,True,True,not independently verifiable; no per-run threshold metadata,True
+7,"adam_mtl,adam_soft,lbfgsb_soft",True,True,True,True,True,not independently verifiable; no per-run threshold metadata,True
+8,"adam_mtl,adam_soft,lbfgsb_soft",True,True,True,True,True,not independently verifiable; no per-run threshold metadata,True
+9,"adam_mtl,adam_soft,lbfgsb_soft",True,True,True,True,True,not independently verifiable; no per-run threshold metadata,True

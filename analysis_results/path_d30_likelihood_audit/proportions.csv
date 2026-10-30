@@ -1,0 +1,6 @@
+quantity,count,denominator,percent
+newly satisfied with true-only realization,45,66,68.18181818181819
+newly satisfied necessarily using false edge,21,66,31.818181818181817
+newly satisfied with MTL-added false direct edge,11,66,16.666666666666668
+MTL-only false edges on prior paths,75,76,98.6842105263158
+seeds with no newly satisfied priors,0,10,0
