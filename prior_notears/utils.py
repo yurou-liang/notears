@@ -3,6 +3,14 @@ from scipy.special import expit as sigmoid
 import igraph as ig
 import random
 import torch
+import networkx as nx
+from causallearn.graph.Dag import Dag
+from causallearn.graph.GraphNode import GraphNode
+from causallearn.graph.AdjacencyConfusion import AdjacencyConfusion
+from causallearn.graph.ArrowConfusion import ArrowConfusion
+from causallearn.graph.SHD import SHD
+from causallearn.utils.DAG2CPDAG import dag2cpdag
+
 
 
 def set_random_seed(seed):
@@ -59,8 +67,9 @@ def simulate_dag(d, s0, graph_type):
     return B_perm
 
 
-def generate_prior_knowledge(B, prior_rate, prior_type, random_state=None):
-    """Sample correct prior knowledge from a ground-truth DAG.
+def generate_prior_knowledge(B, prior_rate, prior_type, random_state=None,
+                             imperfect=False, imperfect_rate=0.3):
+    """Sample prior knowledge, optionally including incorrect statements.
 
     For each type, sample ``ceil(prior_rate * number_of_candidates)``
     statements, capped by the number of eligible ground-truth pairs. Edge
@@ -78,6 +87,15 @@ def generate_prior_knowledge(B, prior_rate, prior_type, random_state=None):
             name without the ``_pairs`` suffix is also accepted.
         random_state (int, optional): Seed for local reproducible sampling. If
             omitted, sampling uses NumPy's global random state.
+        imperfect (bool): If False, preserve the original correct-only sampling.
+        imperfect_rate (float): Fraction of the sampled priors that are wrong,
+            between zero and one; used only when imperfect=True. The total is
+            still ceil(min(prior_rate, 1) * number_of_correct_candidates).
+            Round total * imperfect_rate to the nearest integer (halves up)
+            for the wrong count and use the remainder for the correct count.
+            Wrong existence priors come from non-existing relations; wrong
+            forbidden priors come from existing relations. Sampling is without
+            replacement; an insufficient opposite pool raises ValueError.
 
     Returns:
         dict: For a single type, ``{prior_type: pairs}``. For ``mix``, the
@@ -92,6 +110,8 @@ def generate_prior_knowledge(B, prior_rate, prior_type, random_state=None):
         raise ValueError('B must be a square adjacency matrix')
     if not np.isfinite(prior_rate) or prior_rate < 0:
         raise ValueError('prior_rate must be a finite nonnegative number')
+    if imperfect and (not np.isfinite(imperfect_rate) or not 0 <= imperfect_rate <= 1):
+        raise ValueError('imperfect_rate must be a finite number between zero and one')
 
     canonical_types = (
         'forbid_edge_pairs',
@@ -132,6 +152,7 @@ def generate_prior_knowledge(B, prior_rate, prior_type, random_state=None):
             type_seed = int(rng.randint(0, 2**31 - 1))
             prior_knowledge.update(generate_prior_knowledge(
                 B, prior_rate, candidate_type, random_state=type_seed,
+                imperfect=imperfect, imperfect_rate=imperfect_rate,
             ))
         return prior_knowledge
 
@@ -154,6 +175,7 @@ def generate_prior_knowledge(B, prior_rate, prior_type, random_state=None):
 
     want_existing = prior_type.startswith('exist_')
     candidates = []
+    opposite_candidates = []
     for i in range(d):
         j_start = 0 if directed else i + 1
         for j in range(j_start, d):
@@ -161,11 +183,32 @@ def generate_prior_knowledge(B, prior_rate, prior_type, random_state=None):
                 continue
             if bool(relation[i, j]) == want_existing:
                 candidates.append((i, j))
+            else:
+                opposite_candidates.append((i, j))
 
     requested_count = int(np.ceil(min(prior_rate, 1.0) * len(candidates)))
     actual_count = min(requested_count, len(candidates))
     if actual_count == 0:
         return {prior_type: []}
+
+    if imperfect and imperfect_rate > 0:
+        wrong_count = int(np.floor(actual_count * imperfect_rate + 0.5))
+        correct_count = actual_count - wrong_count
+        if wrong_count > len(opposite_candidates):
+            raise ValueError(
+                f'{prior_type}: requested {wrong_count} incorrect priors, '
+                f'but only {len(opposite_candidates)} opposite pairs exist'
+            )
+        # Use the original sampling path if rounding requests no wrong pairs.
+        if wrong_count:
+            correct_indices = rng.choice(len(candidates), size=correct_count, replace=False)
+            wrong_indices = rng.choice(len(opposite_candidates), size=wrong_count, replace=False)
+            selected_pairs = ([candidates[index] for index in correct_indices]
+                              + [opposite_candidates[index] for index in wrong_indices])
+            # Keep the requested label: an absent edge sampled for exist_edge
+            # is deliberately an incorrect existence claim, not a forbid claim.
+            rng.shuffle(selected_pairs)
+            return {prior_type: selected_pairs}
 
     selected_indices = rng.choice(
         len(candidates),
@@ -491,6 +534,81 @@ def count_accuracy(B_true, B_est):
     missing_lower = np.setdiff1d(cond_lower, pred_lower, assume_unique=True)
     shd = len(extra_lower) + len(missing_lower) + len(reverse)
     return {'fdr': fdr, 'tpr': tpr, 'fpr': fpr, 'f1': f1, 'shd': shd, 'nnz': pred_size}
+
+
+def count_MEC_accuracy(B_true, B_est):
+    """
+    Compute SHD-CPDAG, adjacency F1, and arrowhead F1.
+
+    Parameters
+    ----------
+    B_true, B_est : array-like, shape (d, d)
+        Binary DAG adjacency matrices.
+        B[i, j] = 1 represents i -> j.
+        Both matrices must use the same node ordering.
+
+    Returns
+    -------
+    dict
+        Evaluation metrics computed between the two CPDAGs.
+        F1 is NaN if both positive sets are empty.
+    """
+    B_true = np.asarray(B_true)
+    B_est = np.asarray(B_est)
+
+    # Validate matrix shapes.
+    if B_true.ndim != 2 or B_true.shape[0] != B_true.shape[1]:
+        raise ValueError("B_true should be a square matrix")
+    if B_est.ndim != 2 or B_est.shape[0] != B_est.shape[1]:
+        raise ValueError("B_est should be a square matrix")
+    if B_true.shape != B_est.shape:
+        raise ValueError("B_true and B_est should have the same shape")
+    if B_true.shape[0] == 0:
+        raise ValueError("Input matrices should not be empty")
+
+    # Validate binary values and acyclicity.
+    for name, B in (("B_true", B_true), ("B_est", B_est)):
+        if not ((B == 0) | (B == 1)).all():
+            raise ValueError(f"{name} should take values in {{0, 1}}")
+
+        graph = nx.from_numpy_array(B, create_using=nx.DiGraph)
+        if not nx.is_directed_acyclic_graph(graph):
+            raise ValueError(f"{name} should be a DAG")
+
+    # Convert both DAGs to CPDAGs.
+    def to_cpdag(B):
+        nodes = [GraphNode(f"X{i}") for i in range(B.shape[0])]
+        dag = Dag(nodes)
+
+        for i, j in zip(*np.nonzero(B)):
+            dag.add_directed_edge(nodes[int(i)], nodes[int(j)])
+
+        return dag2cpdag(dag)
+
+    true_cpdag = to_cpdag(B_true)
+    est_cpdag = to_cpdag(B_est)
+
+    # Compute adjacency and arrowhead confusion counts.
+    adj = AdjacencyConfusion(true_cpdag, est_cpdag)
+    arrow = ArrowConfusion(true_cpdag, est_cpdag)
+
+    def f1(tp, fp, fn):
+        denominator = 2 * tp + fp + fn
+        return float(2 * tp / denominator) if denominator else float("nan")
+
+    return {
+        "shd_cpdag": int(SHD(true_cpdag, est_cpdag).get_shd()),
+        "adjacency_f1": f1(
+            adj.get_adj_tp(),
+            adj.get_adj_fp(),
+            adj.get_adj_fn(),
+        ),
+        "arrowhead_f1": f1(
+            arrow.get_arrows_tp(),
+            arrow.get_arrows_fp(),
+            arrow.get_arrows_fn(),
+        ),
+    }
 
 def evaluate_prior_knowledge(B_est, prior_knowledge):
     """Return (number_satisfied, percentage_satisfied).

@@ -489,6 +489,7 @@ def combined_inequality_constraints(W, w_threshold, exist_edge_pairs, exist_path
 
 def _h(W):
     """Evaluate value and gradient of acyclicity constraint."""
+    d = W.shape[0]
     E = slin.expm(W * W)  # (Zheng et al. 2018)
     h = np.trace(E) - d
     #     # A different formulation, slightly faster at the cost of numerical stability
@@ -581,9 +582,10 @@ def _cagrad_two_task_coefficients(g1, g2, c):
     """Two-task CAGrad dual, on raw gradients at Soft SUM scale.
 
     Reference: https://github.com/Cranial-XIX/CAGrad (toy.py, cagrad).
-    We use the paper's unrescaled direction, multiplied by two so the anchor
-    is g1 + g2, rather than (g1 + g2)/2. No final /(1+c) rescaling.
-    Thus c=0 returns the exact Soft-sum direction. c must be in [0, 1).
+    The anchor is g0 = g1 + g2, rather than the mean gradient.
+    d = g0 + c*||g0|| * q/||q||, q = x*g1 + (1-x)*g2.
+    The scalar dual minimizes q.T@g0 + c*||g0||*||q|| over x in [0, 1].
+    There is no final /(1+c) rescaling. c=0 returns g1+g2; c must be in [0, 1).
     A common numerical scale is applied to BOTH gradients, preserving their
     relative norms; this is not per-task normalization.
     """
@@ -1150,17 +1152,20 @@ def notears_linear(X, lambda1, loss_type, tau, prior_knowledge=None, max_iter=10
         G2 = G_prior.reshape(-1)
         g2 = np.concatenate((G2, -G2), axis=None)
 
-        # Only the MTL combination changes: raw-gradient CAGrad, Soft-sum anchor.
+        # Raw-gradient CAGrad combination, anchored at the Soft sum.
         if return_diagnostics:
             norm1 = float(np.linalg.norm(g1))
             norm2 = float(np.linalg.norm(g2))
-            prior_active = float(L2 > 0.1)
-            if prior_active == 0.0 or norm2 == 0.0:
+            # prior_active = float(L2 > 0.1)
+            # if prior_active == 0.0 or norm2 == 0.0:
+            if norm2 == 0.0:
                 a1, a2, dual_weight = 1.0, 0.0, 1.0
             else:
                 a1, a2, dual_weight = _cagrad_two_task_coefficients(g1, g2, cagrad_c)
-            direction = a1*g1 + a2*prior_active*g2
-            anchor = g1 + prior_active*g2
+            # direction = a1*g1 + a2*prior_active*g2
+            # anchor = g1 + prior_active*g2
+            direction = a1*g1 + a2*g2
+            anchor = g1 + g2
             anchor_norm = float(np.linalg.norm(anchor))
             relative_adjustment = (float(np.linalg.norm(direction-anchor)/anchor_norm)
                                    if anchor_norm > 0.0 else 0.0)
@@ -1197,12 +1202,14 @@ def notears_linear(X, lambda1, loss_type, tau, prior_knowledge=None, max_iter=10
         if task_normalizers is None:
             raise ValueError("Fixed task normalizers are required with task weights")
         n1, n2 = task_normalizers
-        prior_active = float(L2 > 0.1)
+        # prior_active = float(L2 > 0.1)
         if not all(np.isfinite(n) and n > 0 for n in (n1, n2)):
             raise ValueError("Task normalizers must be positive and finite")
         return (
-            a1 * L1 + a2 * prior_active * L2,
-            a1 * g1 + a2 * prior_active * g2,
+            # a1 * L1 + a2 * prior_active * L2,
+            # a1 * g1 + a2 * prior_active * g2,
+            a1 * L1 + a2 * L2,
+            a1 * g1 + a2 * g2,
         )
 
     # def _violation(c_e, c_i):
@@ -1281,7 +1288,8 @@ def notears_linear(X, lambda1, loss_type, tau, prior_knowledge=None, max_iter=10
     def trace_snapshot(w_value, diag, value, applied_gradient, phase, status=""):
         if trace_path is None:
             return
-        gate = float(diag['L2'] > 0.1)
+        # gate = float(diag['L2'] > 0.1)
+        gate = 1.0
         row = dict(
             steps=trace_updates, stages=outer_iter + 1, attempts=inner_attempt,
             phases=phase, status=status, rho=float(rho), alpha=float(alpha),
@@ -1564,7 +1572,7 @@ if __name__ == '__main__':
             'base_sha256': 'b6894db44c95ef8f44043c824be84cdbcaa39c2e26317237ba2b40cd08d1e27f',
             'base_version': 'latest uploaded linear.py',
             'gradient_method': 'CAGrad, Soft SUM anchor, no final rescaling',
-            'gate_update': 'float(L2 > 0.1) every Adam step, unchanged',
+            'gate_update': 'disabled; prior contribution not gated by penalty magnitude',
             'truth_usage': 'Recorded only; never used in optimization',
             'reported_value': 'Weighted monitoring value, not a potential whose full gradient is CAGrad',
         }, indent=2))
@@ -1573,7 +1581,183 @@ if __name__ == '__main__':
 
     from prior_notears import utils
     utils.set_random_seed(args.s)
-    n, d, s0, graph_type, sem_type = 10*args.d, args.d, args.e*args.d, args.g, args.n
+    n, d, s0, graph_type, sem_type = 2000, args.d, args.e*args.d, args.g, args.n
+    # B_true = np.array([
+    #     [0, 1, 0, 1],
+    #     [0, 0, 0, 1],
+    #     [0, 0, 0, 1],
+    #     [0, 0, 0, 0]
+    # ], dtype=int)
+    # W_true = utils.simulate_parameter(B_true)
+    # prior_knowledge = {
+    #     "exist_edge_pairs": [
+    #     [2, 3],
+    #     [1, 0]
+    #     ],
+    #     "forbid_path_pairs": [
+    #     [0, 2]
+    #     ],
+    #     "exist_path_pairs": [],
+    #     "forbid_edge_pairs": [],
+    #     "exist_trek_pairs": [],
+    #     "forbid_trek_pairs": []
+    # }
+    # X = utils.simulate_linear_sem(W_true, n, sem_type)
+    # scaler = StandardScaler()
+    # X_std = scaler.fit_transform(X)
+    # evaluation_status = {}
+    # filename = f"conflict_priors_seed_{args.s}.json"
+    # print(f'>>> Evaluation without prior knowledge and likelihood loss <<<')
+    # start_time = time.perf_counter()
+    # W_est_no_prior_ll = linear.notears_linear(X_std, lambda1=0.1, loss_type="likelihood", w_threshold=args.t)
+    # running_time_no_prior_ll = time.perf_counter() - start_time
+    # h_est_no_prior_ll, _ = _h(W_est_no_prior_ll)
+    # loss_no_prior_ll, _ = _loss(W_est_no_prior_ll, X_std, "likelihood")
+    # try:
+    #     if not utils.is_dag(W_est_no_prior_ll):
+    #         raise ValueError("Estimated graph contains a directed cycle")
+
+    #     acc_no_prior_ll = utils.count_accuracy(
+    #         B_true, W_est_no_prior_ll != 0
+    #     )
+    # except Exception as exc:
+    #     evaluation_status["no_prior_ll"] = {
+    #         "status": "failed",
+    #         "error_type": type(exc).__name__,
+    #         "error": str(exc),
+    #     }
+    #     print(f"Evaluation failed: {exc}")
+    # else:
+    #     evaluation_status["no_prior_ll"] = {"status": "completed"}
+    # print(f'>>> Evaluation with conflict prior knowledge and likelihood loss <<<')
+    # start_time = time.perf_counter()
+    # W_est_prior_ll, sol_success_ll = notears_linear(X_std, lambda1=0.1, loss_type="likelihood", tau=args.tau, prior_knowledge=prior_knowledge, w_threshold=args.t, epsilon=args.ep, compare=args.c,)
+    # running_time_prior_ll = time.perf_counter() - start_time
+    # h_est_prior_ll, _ = _h(W_est_prior_ll)
+    # loss_prior_ll, _ = _loss(W_est_prior_ll, X_std, "likelihood")
+    # constraint_values_prior_ll = evaluate_prior_values(W_est_prior_ll, prior_knowledge, args.t, args.c)
+    # satisfied_prior_ll, satisfied_percentage_prior_ll = utils.evaluate_prior_knowledge(W_est_prior_ll, prior_knowledge)
+    # try:
+    #     if not utils.is_dag(W_est_prior_ll):
+    #         raise ValueError("Estimated graph contains a directed cycle")
+
+    #     acc_prior_ll = utils.count_accuracy(
+    #         B_true, W_est_prior_ll != 0
+    #     )
+    # except Exception as exc:
+    #     evaluation_status["prior_ll"] = {
+    #         "status": "failed",
+    #         "error_type": type(exc).__name__,
+    #         "error": str(exc),
+    #     }
+    #     print(f"Evaluation failed: {exc}")
+    # else:
+    #     evaluation_status["prior_ll"] = {"status": "completed"}
+
+    # print(f'>>> Evaluation with correct prior knowledge and likelihood loss <<<')
+    # correct_prior_knowledge = {
+    #         "exist_edge_pairs": [
+    #         [2, 3],
+    #         ],
+    #         "forbid_path_pairs": [
+    #         [0, 2]
+    #         ],
+    #         "exist_path_pairs": [],
+    #         "forbid_edge_pairs": [],
+    #         "exist_trek_pairs": [],
+    #         "forbid_trek_pairs": []
+    #     }
+    # start_time = time.perf_counter()
+    # W_est_prior_ll_corrected, sol_success_ll_corrected = notears_linear(X_std, lambda1=0.1, loss_type="likelihood", tau=args.tau, prior_knowledge=correct_prior_knowledge, w_threshold=args.t, epsilon=args.ep, compare=args.c,)
+    # running_time_prior_ll_corrected = time.perf_counter() - start_time
+    # h_est_prior_ll_corrected, _ = _h(W_est_prior_ll_corrected)
+    # loss_prior_ll_corrected, _ = _loss(W_est_prior_ll_corrected, X_std, "likelihood")
+    # constraint_values_prior_ll_corrected = evaluate_prior_values(W_est_prior_ll_corrected, correct_prior_knowledge, args.t, args.c)
+    # satisfied_prior_ll_corrected, satisfied_percentage_prior_ll_corrected = utils.evaluate_prior_knowledge(W_est_prior_ll_corrected, correct_prior_knowledge)
+    # try:
+    #     if not utils.is_dag(W_est_prior_ll_corrected):
+    #         raise ValueError("Estimated graph contains a directed cycle")
+
+    #     acc_prior_ll_corrected = utils.count_accuracy(
+    #         B_true, W_est_prior_ll_corrected != 0
+    #     )
+    # except Exception as exc:
+    #     evaluation_status["prior_ll_corrected"] = {
+    #         "status": "failed",
+    #         "error_type": type(exc).__name__,
+    #         "error": str(exc),
+    #     }
+    #     print(f"Evaluation failed: {exc}")
+    # else:
+    #     evaluation_status["prior_ll_corrected"] = {"status": "completed"}
+
+    # results = {
+    #     "B_true": B_true.tolist(),
+    #     "W_true": W_true.tolist(),
+    #     "X": X.tolist(),
+    #     "X_std": X_std.tolist(),
+    #     "evaluation_status": evaluation_status,
+    # }
+
+    # optional_result_names = (
+    #     "W_est_no_prior_ll",
+    #     "W_est_prior_ll",
+    #     "W_est_prior_ll_corrected",
+    #     "h_est_prior_ll",
+    #     "h_est_prior_ll_corrected",
+    #     "h_est_no_prior_ll",
+    #     "acc_prior_ll",
+    #     "acc_prior_ll_corrected",
+    #     "acc_no_prior_ll",
+    #     "loss_prior_ll",
+    #     "loss_prior_ll_corrected",
+    #     "loss_no_prior_ll",
+    #     "constraint_values_prior_ll",
+    #     "constraint_values_prior_ll_corrected",
+    #     "constraint_values_no_prior_ll",
+    #     "satisfied_prior_ll",
+    #     "satisfied_percentage_prior_ll",
+    #     "satisfied_prior_ll_corrected",
+    #     "satisfied_percentage_prior_ll_corrected",
+    #     "satisfied_no_prior_ll",
+    #     "satisfied_percentage_no_prior_ll",
+    #     "sol_success_ll",
+    #     "sol_success_ll_corrected",
+    #     "running_time_prior_ll",
+    #     "running_time_prior_ll_corrected",
+    #     "running_time_no_prior_ll",
+    # )
+    # current_scope = locals()
+    # for name in optional_result_names:
+    #     if name in current_scope:
+    #         value = current_scope[name]
+    #         if isinstance(value, np.ndarray):
+    #             value = value.tolist()
+    #         elif isinstance(value, np.generic):
+    #             value = value.item()
+    #         results[name] = value
+
+    # project_root = Path(__file__).resolve().parent.parent
+    # output_dir = project_root / f"linear_{args.p}"
+    # output_dir.mkdir(parents=True, exist_ok=True)
+
+    # output_path = output_dir / filename
+
+    # with output_path.open("w") as file:
+    #     json.dump(results, file, indent=4)
+
+    # for label in ("no_prior_ll", "prior_ll", "no_prior_l2", "prior_l2", "prior_ll_corrected"):
+    #     metrics = results.get(f"acc_{label}")
+    #     if isinstance(metrics, dict):
+    #         satisfaction = results.get(f"satisfied_percentage_{label}", float("nan"))
+    #         print(
+    #             f"Result [{label}]: F1={metrics['f1']:.4f} "
+    #             f"SHD={metrics['shd']} satisfaction={satisfaction:.1f}%",
+    #             flush=True,
+    #         )
+    # print(f"Results saved to: {output_path}")
+
+    ###################################################
     B_true = utils.simulate_dag(d, s0, graph_type)
     print(f"Run: seed={args.s} d={d} graph={graph_type} edges={s0} tau={args.tau}", flush=True)
     W_true = utils.simulate_parameter(B_true)
@@ -1618,6 +1802,7 @@ if __name__ == '__main__':
                 B_true,
                 prior_rate=args.r,
                 prior_type=args.p,
+                imperfect=True,
             )
         elif 'forbid' in args.p:
             prior_knowledge_ll = utils.generate_unsatisfed_prior_knowledge(
@@ -1691,6 +1876,7 @@ if __name__ == '__main__':
                     B_true,
                     prior_rate=args.r,
                     prior_type=args.p,
+                    imperfect=True,
                 )
             elif 'forbid' in args.p:
                 prior_knowledge_l2 = utils.generate_unsatisfed_prior_knowledge(
