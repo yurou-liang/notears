@@ -1802,7 +1802,7 @@ if __name__ == '__main__':
                 B_true,
                 prior_rate=args.r,
                 prior_type=args.p,
-                imperfect=True,
+                # imperfect=True,
             )
         elif 'forbid' in args.p:
             prior_knowledge_ll = utils.generate_unsatisfed_prior_knowledge(
@@ -1876,7 +1876,7 @@ if __name__ == '__main__':
                     B_true,
                     prior_rate=args.r,
                     prior_type=args.p,
-                    imperfect=True,
+                    # imperfect=True,
                 )
             elif 'forbid' in args.p:
                 prior_knowledge_l2 = utils.generate_unsatisfed_prior_knowledge(

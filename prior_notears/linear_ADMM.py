@@ -579,8 +579,8 @@ def _loss(W, X, loss_type):
         return loss, G_loss.ravel()
 
 def notears_linear(X, lambda1, loss_type, tau, prior_knowledge=None, max_iter=100, h_tol=1e-8, rho_max=1e+16, w_threshold=0.3, sharpness=50.0, epsilon=1e-1, compare = False,
-                   adam_lr=1e-3, adam_max_steps=10000, inner_param_tol=1e-5, c_tol=1e-8):
-    """Optimize W and masked R jointly using an augmented Lagrangian.
+                   inner_max_iter=10000, inner_gtol=1e-5, c_tol=1e-8):
+    """Optimize W and masked R with acyclicity and matrix equality augmented penalties.
 
     Args:
         X (np.ndarray): [n, d] sample matrix
@@ -589,14 +589,14 @@ def notears_linear(X, lambda1, loss_type, tau, prior_knowledge=None, max_iter=10
         tau (float): trust
         prior_knowledge (dict): prior knowledge
         max_iter (int): max num of dual ascent steps
-        h_tol (float): exit if h(W) <= h_tol
+        h_tol (float): tolerance for the acyclicity constraint.
         rho_max (float): stop when both penalties reach this cap.
         w_threshold (float): drop edge if |weight| < threshold
         sharpness (float): softplus sharpness parameter
         epsilon (float): inequality constraint tolerance
         c_tol (float): Frobenius-norm tolerance for (I - W*W) @ R - I.
-        inner_param_tol (float): relative joint W/R parameter-change tolerance,
-            checked every 100 Adam updates; stop after three stable checks.
+        inner_max_iter (int): L-BFGS-B iteration budget per inner solve.
+        inner_gtol (float): projected-gradient tolerance for the joint W/R solve.
 
     Returns:
         W_est (np.ndarray): [d, d] estimated DAG
@@ -983,17 +983,6 @@ def notears_linear(X, lambda1, loss_type, tau, prior_knowledge=None, max_iter=10
         )
         return values, weighted_grad
 
-    # original version of _func
-    # def _func(w):
-    #     """Evaluate value and gradient of augmented Lagrangian for doubled variables ([2 d^2] array)."""
-    #     W = _adj(w)
-    #     loss, G_loss = _loss(W)
-    #     h, G_h = _h(W)
-    #     obj = loss + 0.5 * rho * h * h + alpha * h + lambda1 * w.sum()
-    #     G_smooth = G_loss + (rho * h + alpha) * G_h
-    #     g_obj = np.concatenate((G_smooth + lambda1, - G_smooth + lambda1), axis=None)
-    #     return obj, g_obj
-
     def _c(W, R_value):
         """Matrix equality residual (I - W elementwise-squared) @ R - I."""
         identity = np.eye(W.shape[0])
@@ -1009,7 +998,7 @@ def notears_linear(X, lambda1, loss_type, tau, prior_knowledge=None, max_iter=10
         return value, grad_W, grad_R
 
     def _func(w, return_diagnostics=False, task_weights=None,
-              task_normalizers=None):
+              task_normalizers=None, R_value=None):
         """Evaluate value and learning direction of augmented Lagrangian for doubled variables ([2 d^2] array)."""
         W = _adj(w)
         loss, G_loss = _loss(W)
@@ -1027,7 +1016,9 @@ def notears_linear(X, lambda1, loss_type, tau, prior_knowledge=None, max_iter=10
         G_prior = G_e + G_i
 
         # Task 1 includes both augmented-Lagrangian equality penalties.
-        matrix_value, matrix_grad_W, _ = _matrix_penalty(W, R.detach().numpy())
+        matrix_value, matrix_grad_W, _ = _matrix_penalty(
+            W, R if R_value is None else R_value
+        )
         L1 = (loss + lambda1 * w.sum() + alpha * h
               + 0.5 * rho_h * h**2 + matrix_value)
 
@@ -1189,12 +1180,10 @@ def notears_linear(X, lambda1, loss_type, tau, prior_knowledge=None, max_iter=10
     fixed_flat = np.tile(fixed.ravel(), 2)
     w_est[fixed_flat] = 0.0
     # Independent path matrix, retained across inner solves and outer stages.
-    R = torch.nn.Parameter(torch.zeros((d, d), dtype=torch.float64))
-    R_fixed = torch.zeros((d, d), dtype=torch.bool, device=R.device)
+    R = np.zeros((d, d), dtype=np.float64)
+    R_fixed = np.zeros((d, d), dtype=bool)
     for i, j in forbid_path_pairs:
         R_fixed[i, j] = True
-    with torch.no_grad():
-        R.masked_fill_(R_fixed, 0.0)
     n_priors = (
     len(forbid_trek_pairs)
     + len(exist_edge_pairs)
@@ -1209,8 +1198,26 @@ def notears_linear(X, lambda1, loss_type, tau, prior_knowledge=None, max_iter=10
     bnds = [(0, 0) if i == j else (0, weight_bound) for _ in range(2) for i in range(d) for j in range(d)]
     if rho_max < 1.0 or h_tol < 0 or c_tol < 0:
         raise ValueError("Invalid penalty limit or constraint tolerance")
-    if adam_lr <= 0 or adam_max_steps < 1 or inner_param_tol < 0:
-        raise ValueError("Invalid Adam learning rate, step budget, or tolerance")
+    if inner_max_iter < 1 or inner_gtol <= 0:
+        raise ValueError("Invalid L-BFGS-B iteration budget or gradient tolerance")
+    # Fix both W split variables and forbidden R entries using exact bounds.
+    w_bounds = [(0.0, 0.0) if fixed_flat[k] else bound
+                for k, bound in enumerate(bnds)]
+    r_bounds = [(0.0, 0.0) if is_fixed else (None, None)
+                for is_fixed in R_fixed.ravel()]
+    joint_bounds = w_bounds + r_bounds
+    joint_lower = np.array([(-np.inf if lo is None else lo) for lo, _ in joint_bounds])
+    joint_upper = np.array([(np.inf if hi is None else hi) for _, hi in joint_bounds])
+
+    def joint_objective(x):
+        w_value = x[:2 * d * d]
+        R_value = x[2 * d * d:].reshape(d, d)
+        value, gradient_w = _func(w_value, R_value=R_value)
+        _, _, gradient_R = _matrix_penalty(_adj(w_value), R_value)
+        gradient = np.concatenate((gradient_w, gradient_R.ravel()))
+        if not np.isfinite(value) or not np.all(np.isfinite(gradient)):
+            raise FloatingPointError("Non-finite L-BFGS-B objective or gradient")
+        return value, gradient
     inner_converged = False
     if loss_type in ('l2', 'likelihood'):
         X = X - np.mean(X, axis=0, keepdims=True)
@@ -1219,107 +1226,58 @@ def notears_linear(X, lambda1, loss_type, tau, prior_knowledge=None, max_iter=10
         inner_attempt = 0
         while True:
             inner_attempt += 1
-            parameter = torch.nn.Parameter(
-                torch.tensor(w_est.copy(), dtype=torch.float64)
-            )
-            fixed_tensor = torch.as_tensor(
-                fixed_flat, dtype=torch.bool, device=parameter.device
-            )
-            with torch.no_grad():
-                parameter.masked_fill_(fixed_tensor, 0.0)
-            optimizer = torch.optim.Adam([parameter, R], lr=adam_lr)
+            # Optimize W with R fixed, then R with the updated W fixed.
+            R_fixed_value = R.copy()
 
-            lower = torch.tensor([b[0] for b in bnds], dtype=torch.float64)
-            upper = torch.tensor([b[1] for b in bnds], dtype=torch.float64)
-            inner_converged = False
-            adam_updates = 0
-            checkpoint_w = np.concatenate((w_est, R.detach().numpy().ravel()))
-            stable_checks = 0
-            relative_parameter_change = None
-
-            for step in range(adam_max_steps):
-                w_current = parameter.detach().numpy().copy()
-
-                diagnostics = _func(w_current, return_diagnostics=True)
-                value, gradient = _func(
-                    w_current,
-                    task_weights=(diagnostics["a1"], diagnostics["a2"]),
-                    task_normalizers=(diagnostics["normalizer_1"], diagnostics["normalizer_2"]),
+            def w_objective(w_value):
+                value, gradient = joint_objective(
+                    np.concatenate((w_value, R_fixed_value.ravel()))
                 )
+                return value, gradient[:2 * d * d]
 
+            sol_w = sopt.minimize(
+                w_objective, w_est, method="L-BFGS-B", jac=True,
+                bounds=w_bounds,
+                options={"maxls": 100, "ftol": 1e-15},
+            )
+            w_new = sol_w.x.copy()
+            W_fixed_value = _adj(w_new)
+
+            def r_objective(r_value):
+                value, _, gradient = _matrix_penalty(
+                    W_fixed_value, r_value.reshape(d, d)
+                )
                 if not np.isfinite(value) or not np.all(np.isfinite(gradient)):
-                    raise FloatingPointError("Non-finite Adam objective or gradient")
+                    raise FloatingPointError("Non-finite R objective or gradient")
+                return value, gradient.ravel()
 
-                optimizer.zero_grad(set_to_none=True)
-                parameter.grad = torch.as_tensor(
-                    gradient.copy(), dtype=parameter.dtype, device=parameter.device
-                )
-                parameter.grad.masked_fill_(fixed_tensor, 0.0)
-                _, _, gradient_R = _matrix_penalty(
-                    _adj(w_current), R.detach().numpy()
-                )
-                if not np.all(np.isfinite(gradient_R)):
-                    raise FloatingPointError("Non-finite R gradient")
-                R.grad = torch.as_tensor(
-                    gradient_R.copy(), dtype=R.dtype, device=R.device
-                )
-                R.grad.masked_fill_(R_fixed, 0.0)
-                optimizer.step()
-
-                with torch.no_grad():
-                    parameter.copy_(torch.clamp(parameter, min=lower, max=upper))
-                    R.masked_fill_(R_fixed, 0.0)
-                adam_updates += 1
-                if adam_updates % 100 == 0:
-                    checkpoint_new = np.concatenate((
-                        parameter.detach().numpy(), R.detach().numpy().ravel()
-                    ))
-                    relative_parameter_change = float(
-                        np.linalg.norm(checkpoint_new - checkpoint_w)
-                        / max(1.0, np.linalg.norm(checkpoint_w))
-                    )
-                    stable_checks = (
-                        stable_checks + 1
-                        if relative_parameter_change < inner_param_tol else 0
-                    )
-                    checkpoint_w = checkpoint_new
-                    if stable_checks >= 3:
-                        inner_converged = True
-                        break
-
-            # Accept the final joint Adam iterate.
-            w_new = parameter.detach().numpy().copy()
-
-            # Evaluate diagnostics at the returned point.
-            diagnostics = _func(w_new, return_diagnostics=True)
-            value, gradient = _func(
-                w_new,
-                task_weights=(diagnostics["a1"], diagnostics["a2"]),
-                task_normalizers=(diagnostics["normalizer_1"], diagnostics["normalizer_2"]),
+            sol_r = sopt.minimize(
+                r_objective, R_fixed_value.ravel(), method="L-BFGS-B", jac=True,
+                bounds=r_bounds,
+                options={"maxls": 100, "ftol": 1e-15},
             )
-            if not np.isfinite(value) or not np.all(np.isfinite(gradient)):
-                raise FloatingPointError("Non-finite final Adam objective or gradient")
+            R = sol_r.x.reshape(d, d).copy()
+            x_new = np.concatenate((w_new, R.ravel()))
+            value, gradient = joint_objective(x_new)
+            projected_gradient = x_new - np.clip(
+                x_new - gradient, joint_lower, joint_upper
+            )
+            projected_norm = float(np.max(np.abs(projected_gradient)))
+            inner_converged = bool(
+                sol_w.success and sol_r.success and projected_norm <= inner_gtol
+            )
             h_new, _ = _h(_adj(w_new))
-            C_value = _c(_adj(w_new), R.detach().numpy())
+            C_value = _c(_adj(w_new), R)
             c_new = float(np.linalg.norm(C_value, ord="fro"))
             if not np.isfinite(c_new):
                 raise FloatingPointError("Non-finite matrix constraint residual")
-            cosine = diagnostics["gradient_cosine"]
-            cosine_text = "undefined" if cosine is None else f"{cosine:.3f}"
-            stop_reason = "parameter_stable" if inner_converged else "budget_exhausted"
-            change_text = (
-                "unchecked" if relative_parameter_change is None
-                else f"{relative_parameter_change:.3e}"
-            )
             print(
-                f"Adam [{loss_type}] stage={outer_iter + 1} attempt={inner_attempt} "
-                f"steps={adam_updates} stop={stop_reason} "
-                f"h={h_new:.3e} c={c_new:.3e} rho_h={rho_h:.1e} rho_c={rho_c:.1e} "
-                f"param_change={change_text} stable_checks={stable_checks}/3 "
-                f"L1={diagnostics['L1']:.4g} L2={diagnostics['L2']:.4g} "
-                f"a=({diagnostics['a1']:.3g},{diagnostics['a2']:.3g}) "
-                f"grad_norms=({diagnostics['norm_g1']:.3e},"
-                f"{diagnostics['norm_g2']:.3e}) cos={cosine_text}",
+                f"L-BFGS-B [{loss_type}] stage={outer_iter + 1} attempt={inner_attempt} "
+                f"iterations_W={sol_w.nit} iterations_R={sol_r.nit} success={inner_converged} "
+                f"objective={value:.6g} projected_grad={projected_norm:.3e} "
+                f"h={h_new:.3e} c={c_new:.3e} "
+                f"rho_h={rho_h:.1e} rho_c={rho_c:.1e} "
+                f"message_W={sol_w.message} message_R={sol_r.message}",
                 flush=True,
             )
             W_new = _adj(w_new)
@@ -1554,7 +1512,7 @@ if __name__ == '__main__':
     print(f"Run: seed={args.s} d={d} graph={graph_type} edges={s0} tau={args.tau}", flush=True)
     W_true = utils.simulate_parameter(B_true)
     if not args.c:
-        filename = f"linear_{args.p}_{graph_type}{args.e}_d{d}_{sem_type}_rate{args.r}_epsilon{args.ep}_seed{args.s}_tau{args.tau}_mtl_adam.json"
+        filename = f"linear_{args.p}_{graph_type}{args.e}_d{d}_{sem_type}_rate{args.r}_epsilon{args.ep}_seed{args.s}_tau{args.tau}_lbfgsb.json"
     else:
         filename = f"linear_{args.p}_{graph_type}{args.e}_d{d}_{sem_type}_rate{args.r}_epsilon10_seed{args.s}_mtl_compare.json"
 

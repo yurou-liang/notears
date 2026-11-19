@@ -67,9 +67,159 @@ def simulate_dag(d, s0, graph_type):
     return B_perm
 
 
-def generate_prior_knowledge(B, prior_rate, prior_type, random_state=None,
-                             imperfect=False, imperfect_rate=0.3):
-    """Sample prior knowledge, optionally including incorrect statements.
+# def generate_prior_knowledge(B, prior_rate, prior_type, random_state=None,
+#                              imperfect=False, imperfect_rate=0.3):
+#     """Sample prior knowledge, optionally including incorrect statements.
+
+#     For each type, sample ``ceil(prior_rate * number_of_candidates)``
+#     statements, capped by the number of eligible ground-truth pairs. Edge
+#     and path pairs are directed. Trek pairs are represented once with ``i < j``
+#     because trek existence is symmetric.
+
+#     Args:
+#         B (np.ndarray): Ground-truth adjacency matrix with shape ``[d, d]``;
+#             ``B[i, j] != 0`` means ``i -> j``.
+#         prior_rate (float): Fraction of eligible pairs to sample for each type.
+#             Values above one select all eligible pairs.
+#         prior_type (str): ``mix`` or one of ``forbid_edge_pairs``, ``forbid_path_pairs``,
+#             ``forbid_trek_pairs``, ``exist_edge_pairs``,
+#             ``exist_path_pairs``, or ``exist_trek_pairs``. The corresponding
+#             name without the ``_pairs`` suffix is also accepted.
+#         random_state (int, optional): Seed for local reproducible sampling. If
+#             omitted, sampling uses NumPy's global random state.
+#         imperfect (bool): If False, preserve the original correct-only sampling.
+#         imperfect_rate (float): Fraction of the sampled priors that are wrong,
+#             between zero and one; used only when imperfect=True. The total is
+#             still ceil(min(prior_rate, 1) * number_of_correct_candidates).
+#             Round total * imperfect_rate to the nearest integer (halves up)
+#             for the wrong count and use the remainder for the correct count.
+#             Wrong existence priors come from non-existing relations; wrong
+#             forbidden priors come from existing relations. Sampling is without
+#             replacement; an insufficient opposite pool raises ValueError.
+
+#     Returns:
+#         dict: For a single type, ``{prior_type: pairs}``. For ``mix``, the
+#         dictionary contains all six canonical type keys, with the rate applied
+#         separately to each type. Path candidates count reachable endpoint
+#         pairs, not distinct routes.
+#     """
+#     rng = np.random if random_state is None else np.random.RandomState(random_state)
+
+#     B = np.asarray(B)
+#     if B.ndim != 2 or B.shape[0] != B.shape[1]:
+#         raise ValueError('B must be a square adjacency matrix')
+#     if not np.isfinite(prior_rate) or prior_rate < 0:
+#         raise ValueError('prior_rate must be a finite nonnegative number')
+#     if imperfect and (not np.isfinite(imperfect_rate) or not 0 <= imperfect_rate <= 1):
+#         raise ValueError('imperfect_rate must be a finite number between zero and one')
+
+#     canonical_types = (
+#         'forbid_edge_pairs',
+#         'forbid_path_pairs',
+#         'forbid_trek_pairs',
+#         'exist_edge_pairs',
+#         'exist_path_pairs',
+#         'exist_trek_pairs',
+#     )
+#     aliases = {
+#         name.removesuffix('_pairs'): name
+#         for name in canonical_types
+#     }
+#     prior_type = aliases.get(prior_type, prior_type)
+#     if prior_type not in canonical_types and prior_type != 'mix':
+#         raise ValueError(
+#             f'unknown prior type {prior_type!r}; expected one of '
+#             f'{canonical_types} or \'mix\''
+#         )
+
+#     adjacency = B != 0
+#     d = adjacency.shape[0]
+#     np.fill_diagonal(adjacency, False)
+
+#     # Boolean transitive closure: reachability[i, j] is true iff there is a
+#     # directed path from i to j.
+#     reachability = adjacency.copy()
+#     for k in range(d):
+#         reachability |= (
+#             reachability[:, [k]] & reachability[[k], :]
+#         )
+#     np.fill_diagonal(reachability, False)
+
+#     if prior_type == 'mix':
+#         prior_knowledge = {}
+#         for candidate_type in canonical_types:
+#             # Reuse the same RNG stream across types without resetting it.
+#             type_seed = int(rng.randint(0, 2**31 - 1))
+#             prior_knowledge.update(generate_prior_knowledge(
+#                 B, prior_rate, candidate_type, random_state=type_seed,
+#                 imperfect=imperfect, imperfect_rate=imperfect_rate,
+#             ))
+#         return prior_knowledge
+
+#     if prior_type.endswith('edge_pairs'):
+#         relation = adjacency
+#         directed = True
+#     elif prior_type.endswith('path_pairs'):
+#         relation = reachability
+#         directed = True
+#     else:
+#         # A trek exists between two nodes iff they share an ancestor. Each
+#         # node is included as its own ancestor, so each path is also a trek.
+#         ancestor_relation = reachability.copy()
+#         np.fill_diagonal(ancestor_relation, True)
+#         relation = (
+#             ancestor_relation.T.astype(np.int64)
+#             @ ancestor_relation.astype(np.int64)
+#         ) > 0
+#         directed = False
+
+#     want_existing = prior_type.startswith('exist_')
+#     candidates = []
+#     opposite_candidates = []
+#     for i in range(d):
+#         j_start = 0 if directed else i + 1
+#         for j in range(j_start, d):
+#             if i == j:
+#                 continue
+#             if bool(relation[i, j]) == want_existing:
+#                 candidates.append((i, j))
+#             else:
+#                 opposite_candidates.append((i, j))
+
+#     requested_count = int(np.ceil(min(prior_rate, 1.0) * len(candidates)))
+#     actual_count = min(requested_count, len(candidates))
+#     if actual_count == 0:
+#         return {prior_type: []}
+
+#     if imperfect and imperfect_rate > 0:
+#         wrong_count = int(np.floor(actual_count * imperfect_rate + 0.5))
+#         correct_count = actual_count - wrong_count
+#         if wrong_count > len(opposite_candidates):
+#             raise ValueError(
+#                 f'{prior_type}: requested {wrong_count} incorrect priors, '
+#                 f'but only {len(opposite_candidates)} opposite pairs exist'
+#             )
+#         # Use the original sampling path if rounding requests no wrong pairs.
+#         if wrong_count:
+#             correct_indices = rng.choice(len(candidates), size=correct_count, replace=False)
+#             wrong_indices = rng.choice(len(opposite_candidates), size=wrong_count, replace=False)
+#             selected_pairs = ([candidates[index] for index in correct_indices]
+#                               + [opposite_candidates[index] for index in wrong_indices])
+#             # Keep the requested label: an absent edge sampled for exist_edge
+#             # is deliberately an incorrect existence claim, not a forbid claim.
+#             rng.shuffle(selected_pairs)
+#             return {prior_type: selected_pairs}
+
+#     selected_indices = rng.choice(
+#         len(candidates),
+#         size=actual_count,
+#         replace=False,
+#     )
+#     selected_pairs = [candidates[index] for index in selected_indices]
+#     return {prior_type: selected_pairs}
+
+def generate_prior_knowledge(B, prior_rate, prior_type, random_state=None):
+    """Sample correct prior knowledge from a ground-truth DAG.
 
     For each type, sample ``ceil(prior_rate * number_of_candidates)``
     statements, capped by the number of eligible ground-truth pairs. Edge
@@ -87,15 +237,6 @@ def generate_prior_knowledge(B, prior_rate, prior_type, random_state=None,
             name without the ``_pairs`` suffix is also accepted.
         random_state (int, optional): Seed for local reproducible sampling. If
             omitted, sampling uses NumPy's global random state.
-        imperfect (bool): If False, preserve the original correct-only sampling.
-        imperfect_rate (float): Fraction of the sampled priors that are wrong,
-            between zero and one; used only when imperfect=True. The total is
-            still ceil(min(prior_rate, 1) * number_of_correct_candidates).
-            Round total * imperfect_rate to the nearest integer (halves up)
-            for the wrong count and use the remainder for the correct count.
-            Wrong existence priors come from non-existing relations; wrong
-            forbidden priors come from existing relations. Sampling is without
-            replacement; an insufficient opposite pool raises ValueError.
 
     Returns:
         dict: For a single type, ``{prior_type: pairs}``. For ``mix``, the
@@ -110,8 +251,6 @@ def generate_prior_knowledge(B, prior_rate, prior_type, random_state=None,
         raise ValueError('B must be a square adjacency matrix')
     if not np.isfinite(prior_rate) or prior_rate < 0:
         raise ValueError('prior_rate must be a finite nonnegative number')
-    if imperfect and (not np.isfinite(imperfect_rate) or not 0 <= imperfect_rate <= 1):
-        raise ValueError('imperfect_rate must be a finite number between zero and one')
 
     canonical_types = (
         'forbid_edge_pairs',
@@ -152,7 +291,6 @@ def generate_prior_knowledge(B, prior_rate, prior_type, random_state=None,
             type_seed = int(rng.randint(0, 2**31 - 1))
             prior_knowledge.update(generate_prior_knowledge(
                 B, prior_rate, candidate_type, random_state=type_seed,
-                imperfect=imperfect, imperfect_rate=imperfect_rate,
             ))
         return prior_knowledge
 
@@ -175,7 +313,6 @@ def generate_prior_knowledge(B, prior_rate, prior_type, random_state=None,
 
     want_existing = prior_type.startswith('exist_')
     candidates = []
-    opposite_candidates = []
     for i in range(d):
         j_start = 0 if directed else i + 1
         for j in range(j_start, d):
@@ -183,32 +320,11 @@ def generate_prior_knowledge(B, prior_rate, prior_type, random_state=None,
                 continue
             if bool(relation[i, j]) == want_existing:
                 candidates.append((i, j))
-            else:
-                opposite_candidates.append((i, j))
 
     requested_count = int(np.ceil(min(prior_rate, 1.0) * len(candidates)))
     actual_count = min(requested_count, len(candidates))
     if actual_count == 0:
         return {prior_type: []}
-
-    if imperfect and imperfect_rate > 0:
-        wrong_count = int(np.floor(actual_count * imperfect_rate + 0.5))
-        correct_count = actual_count - wrong_count
-        if wrong_count > len(opposite_candidates):
-            raise ValueError(
-                f'{prior_type}: requested {wrong_count} incorrect priors, '
-                f'but only {len(opposite_candidates)} opposite pairs exist'
-            )
-        # Use the original sampling path if rounding requests no wrong pairs.
-        if wrong_count:
-            correct_indices = rng.choice(len(candidates), size=correct_count, replace=False)
-            wrong_indices = rng.choice(len(opposite_candidates), size=wrong_count, replace=False)
-            selected_pairs = ([candidates[index] for index in correct_indices]
-                              + [opposite_candidates[index] for index in wrong_indices])
-            # Keep the requested label: an absent edge sampled for exist_edge
-            # is deliberately an incorrect existence claim, not a forbid claim.
-            rng.shuffle(selected_pairs)
-            return {prior_type: selected_pairs}
 
     selected_indices = rng.choice(
         len(candidates),
@@ -217,7 +333,6 @@ def generate_prior_knowledge(B, prior_rate, prior_type, random_state=None,
     )
     selected_pairs = [candidates[index] for index in selected_indices]
     return {prior_type: selected_pairs}
-
 
 def generate_unsatisfed_prior_knowledge(B, B_est, prior_rate, prior_type, random_state=None):
     """Sample ground-truth statements that the estimated graph violates.

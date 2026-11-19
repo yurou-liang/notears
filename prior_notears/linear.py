@@ -1457,7 +1457,7 @@ if __name__ == '__main__':
     parser.add_argument('-d', '--num_nodes', dest='d', default=10, type=int)
     parser.add_argument('-e', '--num_edges_per_node', dest='e', default=1, type=int)
     parser.add_argument('-g', '--graph_type', dest='g', default="ER", type=str)
-    parser.add_argument('-l', '--loss_type', dest='l', default="both", type=str)
+    parser.add_argument('-l', '--loss_type', choices=('l2',), default='l2')
     parser.add_argument('-n', '--noise', dest='n', default="gauss", type=str)
     parser.add_argument('-p', '--prior_type', dest='p', default="mix", type=str)
     parser.add_argument('-r', '--prior_rate', dest='r', default=0.25, type=float)
@@ -1470,401 +1470,71 @@ if __name__ == '__main__':
     from prior_notears import utils
     utils.set_random_seed(args.s)
     n, d, s0, graph_type, sem_type = 2000, args.d, args.e*args.d, args.g, args.n
-#     B_true = np.array([
-#     [0, 1, 0, 1],
-#     [0, 0, 0, 1],
-#     [0, 0, 0, 1],
-#     [0, 0, 0, 0]
-# ], dtype=int)
-#     W_true = utils.simulate_parameter(B_true)
-#     prior_knowledge = {
-#         "exist_edge_pairs": [
-#         [2, 3],
-#         [1, 0]
-#         ],
-#         "forbid_path_pairs": [
-#         [0, 2]
-#         ],
-#         "exist_path_pairs": [],
-#         "forbid_edge_pairs": [],
-#         "exist_trek_pairs": [],
-#         "forbid_trek_pairs": []
-#     }
-#     X = utils.simulate_linear_sem(W_true, n, sem_type)
-#     scaler = StandardScaler()
-#     X_std = scaler.fit_transform(X)
-#     evaluation_status = {}
-#     filename = f"conflict_priors_seed_{args.s}.json"
-#     print(f'>>> Evaluation without prior knowledge and likelihood loss <<<')
-#     start_time = time.perf_counter()
-#     W_est_no_prior_ll = linear.notears_linear(X_std, lambda1=0.1, loss_type="likelihood", w_threshold=args.t)
-#     running_time_no_prior_ll = time.perf_counter() - start_time
-#     h_est_no_prior_ll, _ = _h(W_est_no_prior_ll)
-#     loss_no_prior_ll, _ = _loss(W_est_no_prior_ll, X_std, "likelihood")
-#     try:
-#         if not utils.is_dag(W_est_no_prior_ll):
-#             raise ValueError("Estimated graph contains a directed cycle")
-
-#         acc_no_prior_ll = utils.count_accuracy(
-#             B_true, W_est_no_prior_ll != 0
-#         )
-#     except Exception as exc:
-#         evaluation_status["no_prior_ll"] = {
-#             "status": "failed",
-#             "error_type": type(exc).__name__,
-#             "error": str(exc),
-#         }
-#         print(f"Evaluation failed: {exc}")
-#     else:
-#         evaluation_status["no_prior_ll"] = {"status": "completed"}
-#     print(f'>>> Evaluation with conflict prior knowledge and likelihood loss <<<')
-#     start_time = time.perf_counter()
-#     W_est_prior_ll, sol_success_ll = notears_linear(X_std, lambda1=0.1, loss_type="likelihood", tau=args.tau, prior_knowledge=prior_knowledge, w_threshold=args.t, epsilon=args.ep, compare=args.c,)
-#     running_time_prior_ll = time.perf_counter() - start_time
-#     h_est_prior_ll, _ = _h(W_est_prior_ll)
-#     loss_prior_ll, _ = _loss(W_est_prior_ll, X_std, "likelihood")
-#     constraint_values_prior_ll = evaluate_prior_values(W_est_prior_ll, prior_knowledge, args.t, args.c)
-#     satisfied_prior_ll, satisfied_percentage_prior_ll = utils.evaluate_prior_knowledge(W_est_prior_ll, prior_knowledge)
-#     try:
-#         if not utils.is_dag(W_est_prior_ll):
-#             raise ValueError("Estimated graph contains a directed cycle")
-
-#         acc_prior_ll = utils.count_accuracy(
-#             B_true, W_est_prior_ll != 0
-#         )
-#     except Exception as exc:
-#         evaluation_status["prior_ll"] = {
-#             "status": "failed",
-#             "error_type": type(exc).__name__,
-#             "error": str(exc),
-#         }
-#         print(f"Evaluation failed: {exc}")
-#     else:
-#         evaluation_status["prior_ll"] = {"status": "completed"}
-
-#     print(f'>>> Evaluation with correct prior knowledge and likelihood loss <<<')
-#     correct_prior_knowledge = {
-#             "exist_edge_pairs": [
-#             [2, 3],
-#             ],
-#             "forbid_path_pairs": [
-#             [0, 2]
-#             ],
-#             "exist_path_pairs": [],
-#             "forbid_edge_pairs": [],
-#             "exist_trek_pairs": [],
-#             "forbid_trek_pairs": []
-#         }
-#     start_time = time.perf_counter()
-#     W_est_prior_ll_corrected, sol_success_ll_corrected = notears_linear(X_std, lambda1=0.1, loss_type="likelihood", tau=args.tau, prior_knowledge=correct_prior_knowledge, w_threshold=args.t, epsilon=args.ep, compare=args.c,)
-#     running_time_prior_ll_corrected = time.perf_counter() - start_time
-#     h_est_prior_ll_corrected, _ = _h(W_est_prior_ll_corrected)
-#     loss_prior_ll_corrected, _ = _loss(W_est_prior_ll_corrected, X_std, "likelihood")
-#     constraint_values_prior_ll_corrected = evaluate_prior_values(W_est_prior_ll_corrected, correct_prior_knowledge, args.t, args.c)
-#     satisfied_prior_ll_corrected, satisfied_percentage_prior_ll_corrected = utils.evaluate_prior_knowledge(W_est_prior_ll_corrected, correct_prior_knowledge)
-#     try:
-#         if not utils.is_dag(W_est_prior_ll_corrected):
-#             raise ValueError("Estimated graph contains a directed cycle")
-
-#         acc_prior_ll_corrected = utils.count_accuracy(
-#             B_true, W_est_prior_ll_corrected != 0
-#         )
-#     except Exception as exc:
-#         evaluation_status["prior_ll_corrected"] = {
-#             "status": "failed",
-#             "error_type": type(exc).__name__,
-#             "error": str(exc),
-#         }
-#         print(f"Evaluation failed: {exc}")
-#     else:
-#         evaluation_status["prior_ll_corrected"] = {"status": "completed"}
-
-#     results = {
-#         "B_true": B_true.tolist(),
-#         "W_true": W_true.tolist(),
-#         "X": X.tolist(),
-#         "X_std": X_std.tolist(),
-#         "evaluation_status": evaluation_status,
-#     }
-
-#     optional_result_names = (
-#         "W_est_no_prior_ll",
-#         "W_est_prior_ll",
-#         "W_est_prior_ll_corrected",
-#         "h_est_prior_ll",
-#         "h_est_prior_ll_corrected",
-#         "h_est_no_prior_ll",
-#         "acc_prior_ll",
-#         "acc_prior_ll_corrected",
-#         "acc_no_prior_ll",
-#         "loss_prior_ll",
-#         "loss_prior_ll_corrected",
-#         "loss_no_prior_ll",
-#         "constraint_values_prior_ll",
-#         "constraint_values_prior_ll_corrected",
-#         "constraint_values_no_prior_ll",
-#         "satisfied_prior_ll",
-#         "satisfied_percentage_prior_ll",
-#         "satisfied_prior_ll_corrected",
-#         "satisfied_percentage_prior_ll_corrected",
-#         "satisfied_no_prior_ll",
-#         "satisfied_percentage_no_prior_ll",
-#         "sol_success_ll",
-#         "sol_success_ll_corrected",
-#         "running_time_prior_ll",
-#         "running_time_prior_ll_corrected",
-#         "running_time_no_prior_ll",
-#     )
-#     current_scope = locals()
-#     for name in optional_result_names:
-#         if name in current_scope:
-#             value = current_scope[name]
-#             if isinstance(value, np.ndarray):
-#                 value = value.tolist()
-#             elif isinstance(value, np.generic):
-#                 value = value.item()
-#             results[name] = value
-
-#     project_root = Path(__file__).resolve().parent.parent
-#     output_dir = project_root / f"linear_{args.p}"
-#     output_dir.mkdir(parents=True, exist_ok=True)
-
-#     output_path = output_dir / filename
-
-#     with output_path.open("w") as file:
-#         json.dump(results, file, indent=4)
-
-#     for label in ("no_prior_ll", "prior_ll", "no_prior_l2", "prior_l2", "prior_ll_corrected"):
-#         metrics = results.get(f"acc_{label}")
-#         if isinstance(metrics, dict):
-#             satisfaction = results.get(f"satisfied_percentage_{label}", float("nan"))
-#             print(
-#                 f"Result [{label}]: F1={metrics['f1']:.4f} "
-#                 f"SHD={metrics['shd']} satisfaction={satisfaction:.1f}%",
-#                 flush=True,
-#             )
-#     print(f"Results saved to: {output_path}")
-##################################################################################################
     B_true = utils.simulate_dag(d, s0, graph_type)
     print(f"Run: seed={args.s} d={d} graph={graph_type} edges={s0} tau={args.tau}", flush=True)
     W_true = utils.simulate_parameter(B_true)
-    if not args.c:
-        filename = f"linear_{args.p}_{graph_type}{args.e}_d{d}_{sem_type}_rate{args.r}_epsilon{args.ep}_seed{args.s}_tau{args.tau}_mtl_adam.json"
-    else:
-        filename = f"linear_{args.p}_{graph_type}{args.e}_d{d}_{sem_type}_rate{args.r}_epsilon10_seed{args.s}_mtl_compare.json"
+    epsilon = 10 if args.c else args.ep
+    mode = "mtl_compare" if args.c else "mtl_adam"
+    filename = (
+        f"linear_{args.p}_{graph_type}{args.e}_d{d}_{sem_type}_rate{args.r}_"
+        f"epsilon{epsilon}_seed{args.s}_tau{args.tau}_{mode}_l2_unit_noise.json"
+    )
 
-    noise_scale = np.exp(np.random.uniform(np.log(0.5), np.log(2.0), size=d,))
-    X = utils.simulate_linear_sem(W_true, n, sem_type, noise_scale)
-    scaler = StandardScaler()
-    X_std = scaler.fit_transform(X)
-    varsortability_score = varsortability(X_std, W_true)
+    X = utils.simulate_linear_sem(W_true, n, sem_type)
+    X_std = StandardScaler().fit_transform(X)
+    correct_priors = utils.generate_prior_knowledge(
+        B_true, prior_rate=args.r, prior_type=args.p, random_state=args.s,
+    )
+    print("Fully correct prior counts:",
+          {key: len(pairs) for key, pairs in correct_priors.items()}, flush=True)
     evaluation_status = {}
-    print(f'>>> Evaluation without prior knowledge and likelihood loss <<<')
-
-    if args.l in ('both', 'likelihood'):
-        print(f'>>> Evaluation without prior knowledge and likelihood loss <<<')
-        start_time = time.perf_counter()
-        W_est_no_prior_ll = linear.notears_linear(X_std, lambda1=0.1, loss_type="likelihood", w_threshold=args.t)
-        running_time_no_prior_ll = time.perf_counter() - start_time
-        h_est_no_prior_ll, _ = _h(W_est_no_prior_ll)
-        loss_no_prior_ll, _ = _loss(W_est_no_prior_ll, X_std, "likelihood")
-        try:
-            if not utils.is_dag(W_est_no_prior_ll):
-                raise ValueError("Estimated graph contains a directed cycle")
-
-            acc_no_prior_ll = utils.count_accuracy(
-                B_true, W_est_no_prior_ll != 0
-            )
-        except Exception as exc:
-            evaluation_status["no_prior_ll"] = {
-                "status": "failed",
-                "error_type": type(exc).__name__,
-                "error": str(exc),
-            }
-            print(f"Evaluation failed: {exc}")
-        else:
-            evaluation_status["no_prior_ll"] = {"status": "completed"}
-
-        if 'exist' in args.p:
-            prior_knowledge_ll = utils.generate_prior_knowledge(
-                B_true,
-                prior_rate=args.r,
-                prior_type=args.p,
-                imperfect=True,
-            )
-        elif 'forbid' in args.p:
-            prior_knowledge_ll = utils.generate_unsatisfed_prior_knowledge(
-                B_true,
-                B_est=W_est_no_prior_ll,
-                prior_rate=args.r,
-                prior_type=args.p,
-            )
-        elif args.p=='mix':
-            prior_knowledge_ll = utils.generate_mixed_prior_knowledge(
-                B_true,
-                B_est=W_est_no_prior_ll,
-                prior_rate=args.r,
-                prior_type=args.p,
-            )
-
-        print("Likelihood prior counts:", {key: len(pairs) for key, pairs in prior_knowledge_ll.items()}, flush=True)
-        constraint_values_no_prior_ll = evaluate_prior_values(W_est_no_prior_ll, prior_knowledge_ll, args.t)
-        satisfied_no_prior_ll, satisfied_percentage_no_prior_ll = utils.evaluate_prior_knowledge(W_est_no_prior_ll, prior_knowledge_ll)
-        print(f'>>> Evaluation with prior knowledge and likelihood loss <<<')
-        start_time = time.perf_counter()
-        W_est_prior_ll, sol_success_ll = notears_linear(X_std, lambda1=0.1, loss_type="likelihood", tau=args.tau, prior_knowledge=prior_knowledge_ll, w_threshold=args.t, epsilon=args.ep, compare=args.c,)
-        running_time_prior_ll = time.perf_counter() - start_time
-        h_est_prior_ll, _ = _h(W_est_prior_ll)
-        loss_prior_ll, _ = _loss(W_est_prior_ll, X_std, "likelihood")
-        constraint_values_prior_ll = evaluate_prior_values(W_est_prior_ll, prior_knowledge_ll, args.t, args.c)
-        satisfied_prior_ll, satisfied_percentage_prior_ll = utils.evaluate_prior_knowledge(W_est_prior_ll, prior_knowledge_ll)
-        try:
-            if not utils.is_dag(W_est_prior_ll):
-                raise ValueError("Estimated graph contains a directed cycle")
-
-            acc_prior_ll = utils.count_accuracy(
-                B_true, W_est_prior_ll != 0
-            )
-        except Exception as exc:
-            evaluation_status["prior_ll"] = {
-                "status": "failed",
-                "error_type": type(exc).__name__,
-                "error": str(exc),
-            }
-            print(f"Evaluation failed: {exc}")
-        else:
-            evaluation_status["prior_ll"] = {"status": "completed"}
-
-    if args.l in ('both', 'l2'):
-            print(f'>>> Evaluation without prior knowledge and l2 loss <<<')
-            start_time = time.perf_counter()
-            W_est_no_prior_l2 = linear.notears_linear(X_std, lambda1=0.1, loss_type="l2", w_threshold=args.t)
-            running_time_no_prior_l2 = time.perf_counter() - start_time
-            h_est_no_prior_l2, _ = _h(W_est_no_prior_l2)
-            loss_no_prior_l2, _ = _loss(W_est_no_prior_l2, X_std, "l2")
-            try:
-                if not utils.is_dag(W_est_no_prior_l2):
-                    raise ValueError("Estimated graph contains a directed cycle")
-    
-                acc_no_prior_l2 = utils.count_accuracy(
-                    B_true, W_est_no_prior_l2 != 0
-                )
-            except Exception as exc:
-                evaluation_status["no_prior_l2"] = {
-                    "status": "failed",
-                    "error_type": type(exc).__name__,
-                    "error": str(exc),
-                }
-                print(f"Evaluation failed: {exc}")
-            else:
-                evaluation_status["no_prior_l2"] = {"status": "completed"}
-
-            if 'exist' in args.p:
-                prior_knowledge_l2 = utils.generate_prior_knowledge(
-                    B_true,
-                    prior_rate=args.r,
-                    prior_type=args.p,
-                    imperfect=True,
-                )
-            elif 'forbid' in args.p:
-                prior_knowledge_l2 = utils.generate_unsatisfed_prior_knowledge(
-                    B_true,
-                    B_est=W_est_no_prior_l2,
-                    prior_rate=args.r,
-                    prior_type=args.p,
-                )
-            elif args.p=='mix':
-                prior_knowledge_l2 = utils.generate_mixed_prior_knowledge(
-                    B_true,
-                    B_est=W_est_no_prior_l2,
-                    prior_rate=args.r,
-                    prior_type=args.p,
-                )
-            # prior_knowledge_l2 = {"exist_edge_pairs": [(7, 0), (7, 2)]}
-            print("L2 prior counts:", {key: len(pairs) for key, pairs in prior_knowledge_l2.items()}, flush=True)
-            constraint_values_no_prior_l2 = evaluate_prior_values(W_est_no_prior_l2, prior_knowledge_l2, args.t)
-            satisfied_no_prior_l2, satisfied_percentage_no_prior_l2 = utils.evaluate_prior_knowledge(W_est_no_prior_l2, prior_knowledge_l2)
-            print(f'>>> Evaluation with prior knowledge and l2 loss <<<')
-            start_time = time.perf_counter()
-            W_est_prior_l2, sol_success_l2 = notears_linear(X_std, lambda1=0.1, loss_type="l2", tau=args.tau, prior_knowledge=prior_knowledge_l2, w_threshold=args.t, epsilon=args.ep, compare=args.c)
-            running_time_prior_l2 = time.perf_counter() - start_time
-            h_est_prior_l2, _ = _h(W_est_prior_l2)
-            loss_prior_l2, _ = _loss(W_est_prior_l2, X_std, "l2")
-            constraint_values_prior_l2 = evaluate_prior_values(W_est_prior_l2, prior_knowledge_l2, args.t, args.c)
-            satisfied_prior_l2, satisfied_percentage_prior_l2 = utils.evaluate_prior_knowledge(W_est_prior_l2, prior_knowledge_l2)
-            try:
-                if not utils.is_dag(W_est_prior_l2):
-                    raise ValueError("Estimated graph contains a directed cycle")
-    
-                acc_prior_l2 = utils.count_accuracy(
-                    B_true, W_est_prior_l2 != 0
-                )
-            except Exception as exc:
-                evaluation_status["prior_l2"] = {
-                    "status": "failed",
-                    "error_type": type(exc).__name__,
-                    "error": str(exc),
-                }
-                print(f"Evaluation failed: {exc}")
-            else:
-                evaluation_status["prior_l2"] = {"status": "completed"}
-
     results = {
         "B_true": B_true.tolist(),
         "W_true": W_true.tolist(),
         "X": X.tolist(),
         "X_std": X_std.tolist(),
-        "varsortability_score": varsortability_score,
+        "varsortability_score": varsortability(X_std, W_true),
+        "prior_knowledge_perfect_l2": correct_priors,
         "evaluation_status": evaluation_status,
     }
 
-    optional_result_names = (
-        "prior_knowledge_ll",
-        "prior_knowledge_l2",
-        "W_est_prior_ll",
-        "W_est_prior_l2",
-        "W_est_no_prior_ll",
-        "W_est_no_prior_l2",
-        "h_est_prior_ll",
-        "h_est_prior_l2",
-        "h_est_no_prior_ll",
-        "h_est_no_prior_l2",
-        "acc_prior_ll",
-        "acc_prior_l2",
-        "acc_no_prior_ll",
-        "acc_no_prior_l2",
-        "loss_prior_ll",
-        "loss_prior_l2",
-        "loss_no_prior_ll",
-        "loss_no_prior_l2",
-        "constraint_values_prior_ll",
-        "constraint_values_prior_l2",
-        "constraint_values_no_prior_ll",
-        "constraint_values_no_prior_l2",
-        "satisfied_prior_ll",
-        "satisfied_percentage_prior_ll",
-        "satisfied_prior_l2",
-        "satisfied_percentage_prior_l2",
-        "satisfied_no_prior_ll",
-        "satisfied_percentage_no_prior_ll",
-        "satisfied_no_prior_l2",
-        "satisfied_percentage_no_prior_l2",
-        "sol_success_ll",
-        "sol_success_l2",
-        "running_time_prior_ll",
-        "running_time_prior_l2",
-        "running_time_no_prior_ll",
-        "running_time_no_prior_l2"
-    )
-    current_scope = locals()
-    for name in optional_result_names:
-        if name in current_scope:
-            value = current_scope[name]
-            if isinstance(value, np.ndarray):
-                value = value.tolist()
-            elif isinstance(value, np.generic):
-                value = value.item()
-            results[name] = value
+    labels = ("no_prior_l2", "prior_perfect_l2")
+    for label in labels:
+        print(f">>> Evaluation [{label}] <<<", flush=True)
+        start_time = time.perf_counter()
+        if label == "no_prior_l2":
+            W_est = linear.notears_linear(
+                X_std, lambda1=0.1, loss_type="l2", w_threshold=args.t,
+            )
+        else:
+            W_est, success = notears_linear(
+                X_std, lambda1=0.1, loss_type="l2", tau=args.tau,
+                prior_knowledge=correct_priors, w_threshold=args.t,
+                epsilon=args.ep, compare=args.c,
+            )
+            results["sol_success_perfect_l2"] = bool(success)
+
+        results[f"running_time_{label}"] = time.perf_counter() - start_time
+        results[f"W_est_{label}"] = W_est.tolist()
+        results[f"h_est_{label}"] = float(_h(W_est)[0])
+        results[f"loss_{label}"] = float(_loss(W_est, X_std, "l2")[0])
+        results[f"constraint_values_{label}"] = evaluate_prior_values(
+            W_est, correct_priors, args.t, args.c,
+        )
+        satisfied, percentage = utils.evaluate_prior_knowledge(W_est, correct_priors)
+        results[f"satisfied_{label}"] = satisfied
+        results[f"satisfied_percentage_{label}"] = percentage
+        try:
+            if not utils.is_dag(W_est):
+                raise ValueError("Estimated graph contains a directed cycle")
+            results[f"acc_{label}"] = utils.count_accuracy(B_true, W_est != 0)
+        except Exception as exc:
+            evaluation_status[label] = {
+                "status": "failed", "error_type": type(exc).__name__, "error": str(exc),
+            }
+            print(f"Evaluation failed: {exc}")
+        else:
+            evaluation_status[label] = {"status": "completed"}
 
     project_root = Path(__file__).resolve().parent.parent
     output_dir = project_root / f"linear_{args.p}"
@@ -1875,7 +1545,7 @@ if __name__ == '__main__':
     with output_path.open("w") as file:
         json.dump(results, file, indent=4)
 
-    for label in ("no_prior_ll", "prior_ll", "no_prior_l2", "prior_l2"):
+    for label in labels:
         metrics = results.get(f"acc_{label}")
         if isinstance(metrics, dict):
             satisfaction = results.get(f"satisfied_percentage_{label}", float("nan"))
