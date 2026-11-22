@@ -46,8 +46,9 @@ wait_for_one() {
     return 0
 }
 
-NODE_COUNTS=(10)
-EPSILONS=(0.1)
+NODE_COUNTS=(50)
+EPSILONS=(0.05)
+LAMBDA1_VALUES=(0.1)
 # TAU_SETTINGS=(1.0 3.0 10.0 15.0) #"1.0 0.5" "1.0 0.0"
 NOISE_TYPES=(gauss)
 PRIOR_TYPES=(
@@ -61,7 +62,7 @@ PRIOR_TYPES=(
 )
 # Configure the prior-rate sweep here; use decimal spelling for output filenames.
 PRIOR_RATES=(0.5)
-# Each entry is "graph_type:edge_factor". linear_nocurl.py calculates s0 as d times
+# Each entry is "graph_type:edge_factor". linear_nocurl_joint.py calculates s0 as d times
 # edge_factor, giving the ER1, ER2, ER4, and SF4 regimes.
 GRAPH_SETTINGS=(
     # "ER:1"
@@ -85,36 +86,39 @@ for seed in {0..9}; do
                 for prior_type in "${PRIOR_TYPES[@]}"; do
                     for prior_rate in "${PRIOR_RATES[@]}"; do
                         for epsilon in "${EPSILONS[@]}"; do
-                            echo "Running seed=${seed} d=${d} graph=${graph_type}${edge_factor} noise=${noise_type} prior=${prior_type} rate=${prior_rate} epsilon=${epsilon}"
+                            for lambda1 in "${LAMBDA1_VALUES[@]}"; do
+                                echo "Running seed=${seed} d=${d} graph=${graph_type}${edge_factor} noise=${noise_type} prior=${prior_type} rate=${prior_rate} epsilon=${epsilon} lambda1=${lambda1}"
 
-                            output_dir="${PROJECT_ROOT}/linear_nocurl_${prior_type}"
-                            log_dir="${output_dir}/log"
-                            result_stem="linear_nocurl_${prior_type}_${graph_type}${edge_factor}_d${d}_${noise_type}_rate${prior_rate}_epsilon${epsilon}_seed${seed}_tau1.0_soft_hard"
-                            result_file="${output_dir}/${result_stem}.json"
-                            log_file="${log_dir}/${result_stem}.log"
-                            mkdir -p "${output_dir}" "${log_dir}"
+                                output_dir="${PROJECT_ROOT}/linear_nocurl_${prior_type}"
+                                log_dir="${output_dir}/log"
+                                result_stem="linear_nocurl_init_from_linear_hard_${prior_type}_${graph_type}${edge_factor}_d${d}_${noise_type}_rate${prior_rate}_epsilon${epsilon}_seed${seed}_tau1.0_soft_hard_lambda1${lambda1}_joint"
+                                result_file="${output_dir}/${result_stem}.json"
+                                log_file="${log_dir}/${result_stem}.log"
+                                mkdir -p "${output_dir}" "${log_dir}"
 
-                            (
-                                "${PYTHON_BIN}" -u -m prior_notears.linear_nocurl \
-                                    --seed "${seed}" \
-                                    --num_nodes "${d}" \
-                                    --num_edges_per_node "${edge_factor}" \
-                                    --graph_type "${graph_type}" \
-                                    --noise "${noise_type}" \
-                                    --prior_type "${prior_type}" \
-                                    --prior_rate "${prior_rate}" \
-                                    --epsilon "${epsilon}" \
-                                    --tau 1.0
+                                (
+                                    "${PYTHON_BIN}" -u -m prior_notears.linear_nocurl_joint \
+                                        --seed "${seed}" \
+                                        --num_nodes "${d}" \
+                                        --num_edges_per_node "${edge_factor}" \
+                                        --graph_type "${graph_type}" \
+                                        --noise "${noise_type}" \
+                                        --prior_type "${prior_type}" \
+                                        --prior_rate "${prior_rate}" \
+                                        --epsilon "${epsilon}" \
+                                        --lambda1 "${lambda1}" \
+                                        --tau 1.0
 
-                                if [[ ! -f "${result_file}" ]]; then
-                                    echo "Expected result file was not created: ${result_file}" >&2
-                                    exit 1
+                                    if [[ ! -f "${result_file}" ]]; then
+                                        echo "Expected result file was not created: ${result_file}" >&2
+                                        exit 1
+                                    fi
+                                ) > "${log_file}" 2>&1 &
+                                pids[$!]="${log_file}"
+                                if (( ${#pids[@]} >= MAX_JOBS )); then
+                                    wait_for_one
                                 fi
-                            ) > "${log_file}" 2>&1 &
-                            pids[$!]="${log_file}"
-                            if (( ${#pids[@]} >= MAX_JOBS )); then
-                                wait_for_one
-                            fi
+                            done
                         done
                     done
                 done
