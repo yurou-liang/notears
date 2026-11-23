@@ -115,3 +115,4 @@ RoaDs/
 outputs/
 analysis_results/
 DAG-NoCurl/
+trials/linear_*/

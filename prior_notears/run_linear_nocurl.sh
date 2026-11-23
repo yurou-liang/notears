@@ -62,7 +62,7 @@ PRIOR_TYPES=(
 )
 # Configure the prior-rate sweep here; use decimal spelling for output filenames.
 PRIOR_RATES=(0.5)
-# Each entry is "graph_type:edge_factor". linear_nocurl_joint.py calculates s0 as d times
+# Each entry is "graph_type:edge_factor". linear_nocurl_joint_order_repair.py calculates s0 as d times
 # edge_factor, giving the ER1, ER2, ER4, and SF4 regimes.
 GRAPH_SETTINGS=(
     # "ER:1"
@@ -91,13 +91,13 @@ for seed in {0..9}; do
 
                                 output_dir="${PROJECT_ROOT}/linear_nocurl_${prior_type}"
                                 log_dir="${output_dir}/log"
-                                result_stem="linear_nocurl_init_from_linear_hard_${prior_type}_${graph_type}${edge_factor}_d${d}_${noise_type}_rate${prior_rate}_epsilon${epsilon}_seed${seed}_tau1.0_soft_hard_lambda1${lambda1}_joint"
+                                result_stem="linear_nocurl_init_from_linear_hard_${prior_type}_${graph_type}${edge_factor}_d${d}_${noise_type}_rate${prior_rate}_epsilon${epsilon}_seed${seed}_tau1.0_soft_hard_lambda1${lambda1}_joint_order_repair"
                                 result_file="${output_dir}/${result_stem}.json"
                                 log_file="${log_dir}/${result_stem}.log"
                                 mkdir -p "${output_dir}" "${log_dir}"
 
                                 (
-                                    "${PYTHON_BIN}" -u -m prior_notears.linear_nocurl_joint \
+                                    "${PYTHON_BIN}" -u -m prior_notears.linear_nocurl_joint_order_repair \
                                         --seed "${seed}" \
                                         --num_nodes "${d}" \
                                         --num_edges_per_node "${edge_factor}" \
