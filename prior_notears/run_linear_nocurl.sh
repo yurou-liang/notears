@@ -46,17 +46,17 @@ wait_for_one() {
     return 0
 }
 
-NODE_COUNTS=(50)
+NODE_COUNTS=(10 20 30 40 50)
 EPSILONS=(0.05)
-LAMBDA1_VALUES=(0.1)
+LAMBDA1_VALUES=(0.05)
 # TAU_SETTINGS=(1.0 3.0 10.0 15.0) #"1.0 0.5" "1.0 0.0"
-NOISE_TYPES=(gauss)
+NOISE_TYPES=(gumbel)
 PRIOR_TYPES=(
     # forbid_edge_pairs
     # forbid_path_pairs
     # forbid_trek_pairs
-    # exist_edge_pairs
-    exist_path_pairs
+    exist_edge_pairs
+    # exist_path_pairs
     # exist_trek_pairs
     # mix
 )

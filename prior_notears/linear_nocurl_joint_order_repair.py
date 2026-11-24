@@ -6,10 +6,96 @@ import numpy as np
 import scipy.linalg as slin
 import scipy.optimize as sopt
 from scipy.special import expit
-import torch
 
 from prior_notears.repair_nocurl_order import repair_p0
 
+
+def _minimize_finite(fun, x0, bounds, max_retries=16, max_restarts=32,
+                     gtol=1e-5):
+    """Recover from overflow without treating temporary bounds as convergence.
+
+    Recenter on improving finite solutions and check stationarity against the
+    original bounds. Return success=False on stagnation or the restart limit.
+    """
+    evaluations = 0
+
+    def checked_fun(x):
+        nonlocal evaluations
+        evaluations += 1
+        with np.errstate(over='raise', invalid='raise', divide='raise'):
+            value, gradient = fun(x)
+        if not np.isfinite(value) or not np.all(np.isfinite(gradient)):
+            raise FloatingPointError('Non-finite objective or gradient')
+        return value, gradient
+
+    center = np.asarray(x0, dtype=float).copy()
+    # Shrinking a search region cannot repair an invalid starting point.
+    center_value, _ = checked_fun(center)
+    lower = np.array([-np.inf if lo is None else lo for lo, _ in bounds])
+    upper = np.array([np.inf if hi is None else hi for _, hi in bounds])
+    widths = upper - lower
+    full_radius = float(widths.max())
+    # The first joint solve uses its original unbounded coordinates.
+    # On overflow, switch to a finite neighborhood of the current point.
+    retry_radius = max(1.0, np.max(np.abs(center)), widths[np.isfinite(widths)].max(initial=0.0))
+    radius = full_radius
+    overflow_retries = 0
+    iterations = 0
+
+    for restart in range(max_restarts + 1):
+        for attempt in range(max_retries + 1):
+            trial_bounds = list(zip(np.maximum(lower, center - radius),
+                                    np.minimum(upper, center + radius)))
+            try:
+                sol = sopt.minimize(
+                    checked_fun, center, method='L-BFGS-B', jac=True,
+                    bounds=trial_bounds,
+                    options={"maxls": 100, "ftol": 1e-15, "gtol": gtol},
+                )
+                if not np.all(np.isfinite(sol.x)):
+                    raise FloatingPointError('Non-finite optimizer weights')
+                sol.fun, sol.jac = checked_fun(sol.x)
+                break
+            except FloatingPointError as exc:
+                if attempt == max_retries:
+                    raise FloatingPointError(
+                        'Unable to find a finite inner solve after shrinking the search region'
+                    ) from exc
+                overflow_retries += 1
+                radius = 0.5 * (radius if np.isfinite(radius) else retry_radius)
+                print(f'Non-finite optimizer trial; retrying with radius={radius:g}',
+                      flush=True)
+
+        iterations += sol.nit
+        sol.nit = iterations
+        sol.nfev = evaluations
+        sol.overflow_retries = overflow_retries
+        sol.search_radius = radius
+        sol.restarts = restart
+        # Ignore convergence at artificial bounds: use the original bounds.
+        projected = sol.x - np.clip(sol.x - sol.jac, lower, upper)
+        sol.projected_gradient_inf = float(np.max(np.abs(projected)))
+        if sol.projected_gradient_inf <= gtol:
+            sol.success = True
+            sol.status = 0
+            sol.message = 'Converged under the original bounds'
+            return sol
+
+        moved = np.any(sol.x != center)
+        if not moved or sol.fun >= center_value or restart == max_restarts:
+            sol.success = False
+            sol.status = 1
+            sol.message = (
+                'Restart limit reached before convergence under original bounds'
+                if restart == max_restarts else
+                'Stalled before convergence under original bounds'
+            )
+            return sol
+
+        # Continue from the accepted finite point with original bounds restored.
+        center = sol.x.copy()
+        center_value = float(sol.fun)
+        radius = full_radius
 
 def softplus(x, sharpness=50.0):
     return np.logaddexp(0.0, sharpness * x) / sharpness
@@ -354,21 +440,21 @@ def _joint_adjacency(parameters, pairs, d, gradient=None, lambda1=0.0):
 def notears_linear(
     X, reachability_matrix, lambda1, loss_type, tau, prior_knowledge=None,
     w_threshold=0.3, sharpness=50.0, epsilon=1e-1, compare=False,
-    adam_lr=1e-3, adam_max_steps=10000, inner_param_tol=1e-5,
     op="soft", max_iter=100, h_tol=1e-8, rho_max=1e16,
-    *, return_potentials=False,
+    *, return_potentials=False, return_unthresholded=False,
 ):
     """Fit a DAG and return (thresholded W, convergence flag).
 
     reachability_matrix[i, j] is 1 if node i can reach node j by a directed
     path, with rows and columns in X's column order. Its DAG-NoCurl
-    projection is repaired using path-existence priors to initialize phi.
+    projection is repaired using edge- and path-existence priors to initialize phi.
     Hard mode unfreezes phi at the first
     proposed penalty increase. Soft mode holds phi fixed.
     The prior penalties use the same zero-based node pairs as linear.py.
     Soft mode weights them by tau. Hard mode uses an augmented Lagrangian
     for the sum of nonnegative prior violations and checks the pruned graph.
     If return_potentials is true, append the initial and final phi to the result.
+    If return_unthresholded is true, append the weights before thresholding.
     """
     X = np.asarray(X, dtype=float)
     phi = potential_from_connectivity(reachability_matrix)
@@ -385,14 +471,13 @@ def notears_linear(
         or not np.isfinite(rho_max) or rho_max < 1
     ):
         raise ValueError("Invalid augmented Lagrangian iteration limit, tolerance, or rho limit")
-    if adam_lr <= 0 or adam_max_steps < 1 or inner_param_tol < 0:
-        raise ValueError("Invalid Adam learning rate, step budget, or tolerance")
     if loss_type in ("l2", "likelihood"):
         X = X - X.mean(axis=0, keepdims=True)
 
     prior_knowledge = {} if prior_knowledge is None else prior_knowledge
+    exist_edges = prior_knowledge.get("exist_edge_pairs", [])
     exist_paths = prior_knowledge.get("exist_path_pairs", [])
-    phi = repair_p0(phi, exist_paths)
+    phi = repair_p0(phi, [*exist_edges, *exist_paths])
 
     # W = S * ReLU(phi[j] - phi[i]) for a symmetric S. Each active
     # direction represents one unordered pair. Tied pairs are always zero.
@@ -405,7 +490,7 @@ def notears_linear(
         (_forbid_trek, prior_knowledge.get("forbid_trek_pairs", [])),
     ]
     inequality_terms = [
-        (_exist_edges, prior_knowledge.get("exist_edge_pairs", [])),
+        (_exist_edges, exist_edges),
         (partial(_exist_trek, sharpness=sharpness),
          prior_knowledge.get("exist_trek_pairs", [])),
     ]
@@ -463,24 +548,27 @@ def notears_linear(
                 gradient += derivative.reshape(W.shape)
         return value, gradient
 
-    def objective(weights):
-        W = adjacency(weights)
+    # Split signed weights so L1 is linear under the original effective bound.
+    l1_weight = np.tile(lambda1 * scales, 2)
+    bounds = [(0, limit) for limit in np.tile(5.0 / scales, 2)]
+    split_weights = np.zeros(2 * scales.size)
+
+    def soft_objective(split):
+        positive, negative = np.split(split, 2)
+        W = adjacency(positive - negative)
         value, gradient = data_loss(W)
         if tau != 0:
             violation, derivative = prior_violation(W)
             value += tau * violation
             gradient += tau * derivative
-        value += lambda1 * np.abs(W).sum()
-        return value, gradient[active] * scales
+        value += l1_weight @ split
+        active_gradient = gradient[active] * scales
+        return value, np.concatenate((active_gradient, -active_gradient)) + l1_weight
 
     has_priors = any(len(pairs) for pairs in prior_knowledge.values())
     if op == "hard" and has_priors:
         from prior_notears.utils import evaluate_prior_knowledge
 
-        # Split signed weights so L1 is linear in the bounded inner problem.
-        l1_weight = np.tile(lambda1 * scales, 2)
-        bounds = [(0, limit) for limit in np.tile(5.0 / scales, 2)]
-        split_weights = np.zeros(2 * scales.size)
         rho, alpha, previous_h = 1.0, 0.0, np.inf
         joint_parameters = None
         pairs = np.triu_indices(phi.size, k=1)
@@ -510,19 +598,11 @@ def notears_linear(
             for _ in range(max_iter):
                 while True:
                     if joint_parameters is None:
-                        sol = sopt.minimize(
-                            hard_objective, split_weights, method="L-BFGS-B",
-                            jac=True, bounds=bounds,
-                            options={"ftol": 1e-12, "gtol": 1e-8},
-                        )
+                        sol = _minimize_finite(hard_objective, split_weights, bounds)
                         positive, negative = np.split(sol.x, 2)
                         W = adjacency(positive - negative)
                     else:
-                        sol = sopt.minimize(
-                            joint_objective, joint_parameters, method="L-BFGS-B",
-                            jac=True, bounds=joint_bounds,
-                            options={"ftol": 1e-12, "gtol": 1e-8},
-                        )
+                        sol = _minimize_finite(joint_objective, joint_parameters, joint_bounds)
                         joint_parameters = sol.x
                         W, _ = _joint_adjacency(joint_parameters, pairs, phi.size)
                     h, _ = prior_violation(W, hard=True)
@@ -553,6 +633,7 @@ def notears_linear(
             W = adjacency(positive - negative)
         else:
             W, _ = _joint_adjacency(joint_parameters, pairs, phi.size)
+        unthresholded = (W.copy(),) if return_unthresholded else ()
         W[np.abs(W) < w_threshold] = 0
         satisfied, _ = evaluate_prior_knowledge(W, prior_knowledge)
         total_priors = sum(len(pairs) for pairs in prior_knowledge.values())
@@ -561,53 +642,24 @@ def notears_linear(
             final_phi = phi.copy()
             if joint_parameters is not None:
                 final_phi[:-1] = joint_parameters[-(phi.size - 1):]
-            return W, success, phi, final_phi
-        return W, success
+            return (W, success, phi, final_phi) + unthresholded
+        return (W, success) + unthresholded
 
-    weights = np.zeros(scales.size)
-    converged = not weights.size
-    if weights.size:
-        parameter = torch.nn.Parameter(torch.from_numpy(weights.copy()))
-        optimizer = torch.optim.Adam([parameter], lr=adam_lr)
-        # Preserve the original bound on the effective regression coefficients.
-        upper = torch.from_numpy(5.0 / scales)
-        l1_weight = torch.from_numpy(lambda1 * scales)
-        beta2 = optimizer.param_groups[0]["betas"][1]
-        adam_eps = optimizer.param_groups[0]["eps"]
-        checkpoint = weights
-        stable_checks = 0
-        for step in range(1, adam_max_steps + 1):
-            value, gradient = objective(parameter.detach().numpy())
-            if not np.isfinite(value) or not np.all(np.isfinite(gradient)):
-                raise FloatingPointError("Non-finite Adam objective or gradient")
-            optimizer.zero_grad(set_to_none=True)
-            parameter.grad = torch.from_numpy(gradient)
-            optimizer.step()
-            with torch.no_grad():
-                # Apply the L1 proximal step in Adam's diagonal metric.
-                second_moment = optimizer.state[parameter]["exp_avg_sq"]
-                denominator = (second_moment / (1 - beta2 ** step)).sqrt() + adam_eps
-                shrinkage = adam_lr * l1_weight / denominator
-                magnitude = (parameter.abs() - shrinkage).clamp_min(0).minimum(upper)
-                parameter.copy_(parameter.sign() * magnitude)
-            if step % 100 == 0:
-                current = parameter.detach().numpy().copy()
-                change = np.linalg.norm(current - checkpoint) / max(1.0, np.linalg.norm(checkpoint))
-                stable_checks = stable_checks + 1 if change < inner_param_tol else 0
-                checkpoint = current
-                if stable_checks >= 3:
-                    converged = True
-                    break
-        weights = parameter.detach().numpy()
-
-    value, gradient = objective(weights)
-    if not np.isfinite(value) or not np.all(np.isfinite(gradient)):
-        raise FloatingPointError("Non-finite final objective or gradient")
-    W = adjacency(weights)
+    converged = True
+    if split_weights.size:
+        sol = _minimize_finite(soft_objective, split_weights, bounds)
+        split_weights, converged = sol.x, bool(sol.success)
+    else:
+        value, gradient = soft_objective(split_weights)
+        if not np.isfinite(value) or not np.all(np.isfinite(gradient)):
+            raise FloatingPointError("Non-finite soft objective or gradient")
+    positive, negative = np.split(split_weights, 2)
+    W = adjacency(positive - negative)
+    unthresholded = (W.copy(),) if return_unthresholded else ()
     W[np.abs(W) < w_threshold] = 0
     if return_potentials:
-        return W, converged, phi, phi.copy()
-    return W, converged
+        return (W, converged, phi, phi.copy()) + unthresholded
+    return (W, converged) + unthresholded
 
 
 def _h(W):
@@ -730,7 +782,7 @@ if __name__ == '__main__':
     output_dir.mkdir(parents=True, exist_ok=True)
     output_path = output_dir / filename
 
-    initialization_epsilon = 0.1
+    initialization_epsilon = args.ep
     evaluation_status = {}
     results = {
         "B_true": B_true.tolist(),
@@ -794,14 +846,16 @@ if __name__ == '__main__':
     for label, op, priors, tau, init_label in conditions:
         print(f">>> Evaluation [{label}] <<<", flush=True)
         start_time = time.perf_counter()
-        W_est, success, p_init, p_final = notears_linear(
+        W_est, success, p_init, p_final, W_unthresholded = notears_linear(
             X_std, reachability_matrix=reachability_by_init[init_label],
             lambda1=args.lambda1, loss_type="l2", tau=tau,
             prior_knowledge=priors, w_threshold=args.t, epsilon=args.ep,
             compare=args.c, op=op, return_potentials=True,
+            return_unthresholded=True,
         )
         results[f"initialization_source_{label}"] = init_label
         results[f"running_time_{label}"] = time.perf_counter() - start_time
+        results[f"W_est_unthresholded_{label}"] = W_unthresholded.tolist()
         results[f"W_est_{label}"] = W_est.tolist()
         results[f"p_init_original_{label}"] = potential_from_connectivity(
             reachability_by_init[init_label]

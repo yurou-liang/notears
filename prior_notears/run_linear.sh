@@ -47,9 +47,9 @@ wait_for_one() {
 }
 
 NODE_COUNTS=(10 20 30 40 50)
-EPSILONS=(0.1)
+EPSILONS=(0.05)
 # TAU_SETTINGS=(1.0 3.0 10.0 15.0) #"1.0 0.5" "1.0 0.0"
-NOISE_TYPES=(gauss)
+NOISE_TYPES=(gumbel)
 PRIOR_TYPES=(
     # forbid_edge_pairs
     # forbid_path_pairs
@@ -89,7 +89,7 @@ for seed in {0..9}; do
 
                             output_dir="${PROJECT_ROOT}/linear_${prior_type}"
                             log_dir="${output_dir}/log"
-                            result_stem="linear_${prior_type}_${graph_type}${edge_factor}_d${d}_${noise_type}_rate${prior_rate}_epsilon${epsilon}_seed${seed}_tau1.0_mtl_adam_l2_unit_noise_order_init"
+                            result_stem="linear_${prior_type}_${graph_type}${edge_factor}_d${d}_${noise_type}_rate${prior_rate}_epsilon${epsilon}_seed${seed}_tau1.0_mtl_lbfgsb_l2_unit_noise_order_init"
                             result_file="${output_dir}/${result_stem}.json"
                             log_file="${log_dir}/${result_stem}.log"
                             mkdir -p "${output_dir}" "${log_dir}"

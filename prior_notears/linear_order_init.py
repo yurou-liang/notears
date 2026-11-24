@@ -594,7 +594,6 @@ def _loss(W, X, loss_type):
         return loss, G_loss.ravel()
 
 def notears_linear(X, lambda1, loss_type, tau, prior_knowledge=None, max_iter=100, h_tol=1e-8, rho_max=1e+16, w_threshold=0.3, sharpness=50.0, epsilon=1e-1, compare = False,
-                   adam_lr=1e-3, adam_max_steps=10000, inner_param_tol=1e-5,
                    *, W_init=None, _order_mask=None):
     """Solve min_W L(W; X) + lambda1 ‖W‖_1 s.t. h(W) = 0 using augmented Lagrangian.
 
@@ -610,8 +609,6 @@ def notears_linear(X, lambda1, loss_type, tau, prior_knowledge=None, max_iter=10
         w_threshold (float): drop edge if |weight| < threshold
         sharpness (float): softplus sharpness parameter
         epsilon (float): inequality constraint tolerance
-        inner_param_tol (float): relative parameter-change tolerance, checked
-            every 100 Adam updates; stop after three consecutive stable checks
         W_init (np.ndarray or None): optional signed [d, d] warm start. If
             omitted, learn a warm start from the implied partial order.
 
@@ -1266,8 +1263,6 @@ def notears_linear(X, lambda1, loss_type, tau, prior_knowledge=None, max_iter=10
         W_init, _ = fit_order_initialization(
             X, lambda1, loss_type, exist_path_pairs,
             max_iter=max_iter, h_tol=h_tol, rho_max=rho_max,
-            adam_lr=adam_lr, adam_max_steps=adam_max_steps,
-            inner_param_tol=inner_param_tol,
         )
     if W_init is None:
         w_est = np.zeros(2 * d * d)
@@ -1293,8 +1288,6 @@ def notears_linear(X, lambda1, loss_type, tau, prior_knowledge=None, max_iter=10
 )
     tau = np.full(n_priors, tau, dtype=np.float64)
     bnds = [(0, 0) if i == j else (0, weight_bound) for _ in range(2) for i in range(d) for j in range(d)]
-    if adam_lr <= 0 or adam_max_steps < 1 or inner_param_tol < 0:
-        raise ValueError("Invalid Adam learning rate, step budget, or tolerance")
     inner_converged = False
     if loss_type in ('l2', 'likelihood'):
         X = X - np.mean(X, axis=0, keepdims=True)
@@ -1303,170 +1296,17 @@ def notears_linear(X, lambda1, loss_type, tau, prior_knowledge=None, max_iter=10
         inner_attempt = 0
         while rho < rho_max:
             inner_attempt += 1
-            accepted_iteration = 0
-            # diagnostics = _func(w_est, return_diagnostics=True)
-            # fixed_weights = (diagnostics["a1"], diagnostics["a2"])
-            # fixed_normalizers = (
-            #     diagnostics["normalizer_1"], diagnostics["normalizer_2"]
-            # )
-            # print("mtl_weight_selection:", json.dumps({
-            #     "loss_type": loss_type,
-            #     "outer_iter": outer_iter + 1,
-            #     "inner_attempt": inner_attempt,
-            #     "rho": float(rho),
-            #     "alpha": float(alpha),
-            #     "relative_prior_weight": (
-            #         (fixed_weights[1] / fixed_normalizers[1])
-            #         / (fixed_weights[0] / fixed_normalizers[0])
-            #         if fixed_weights[0] > 0 else None
-            #     ),
-            #     **diagnostics,
-            # }), flush=True)
-
-            # def weighted_objective(w):
-            #     return _func(
-            #         w, task_weights=fixed_weights,
-            #         task_normalizers=fixed_normalizers,
-            #     )
-
-            # def log_iteration(w):
-            #     nonlocal accepted_iteration
-            #     accepted_iteration += 1
-
-            #     diagnostics = _func(w, return_diagnostics=True)
-            #     print(
-            #         f"loss_type={loss_type}, "
-            #         f"outer_iter={outer_iter + 1}, "
-            #         f"inner_attempt={inner_attempt}, "
-            #         f"inner_iter={accepted_iteration}, "
-            #         f"used_a1={fixed_weights[0]:.6e}, "
-            #         f"used_a2={fixed_weights[1]:.6e}, "
-            #         f"used_normalizer_1={fixed_normalizers[0]:.6e}, "
-            #         f"used_normalizer_2={fixed_normalizers[1]:.6e}, "
-            #         f"suggested_a1={diagnostics['a1']:.6e}, "
-            #         f"suggested_a2={diagnostics['a2']:.6e}, "
-            #         f"diagnostics={json.dumps(diagnostics)}",
-            #         flush=True,
-            #     )
-            # sol = sopt.minimize(weighted_objective, w_est, method='L-BFGS-B', jac=True, bounds=bnds, callback=log_iteration)
-
-            # if not sol.success:
-            #     print("L-BFGS-B warning:", sol.message)
-            #     print("rho:", rho)
-
-            # if not np.isfinite(sol.fun):
-            #     raise FloatingPointError(
-            #         "The augmented objective became non-finite"
-            #     )
-
-            # if not np.all(np.isfinite(sol.x)):
-            #     raise FloatingPointError(
-            #         "The optimizer returned non-finite weights"
-            #     )
-            
-            # diagnostics = {
-            #     "outer_iter": outer_iter + 1,
-            #     "inner_attempt": inner_attempt,
-            #     "success": bool(sol.success),
-            #     "status": int(sol.status),
-            #     "message": str(sol.message),
-            #     "nit": int(sol.nit),
-            #     "nfev": int(sol.nfev),
-            #     "objective": float(sol.fun),
-            #     "weight_change_inf": float(np.max(np.abs(_adj(sol.x) - _adj(w_est)))),
-            #     "rho": float(rho),
-            #     "alpha": float(alpha),
-            # }
-            # print("inner_solver:", json.dumps(diagnostics), flush=True)
-            # w_new = sol.x
-            # h_new, _ = _h(_adj(w_new))
-            # inner_converged = bool(sol.success)
-
-            parameter = torch.nn.Parameter(
-                torch.tensor(w_est.copy(), dtype=torch.float64)
-            )
-            optimizer = torch.optim.Adam([parameter], lr=adam_lr)
-
-            lower = torch.tensor([b[0] for b in bnds], dtype=torch.float64)
-            upper = torch.tensor([b[1] for b in bnds], dtype=torch.float64)
-            inner_converged = False
-            adam_updates = 0
-            checkpoint_w = w_est.copy()
-            stable_checks = 0
-            relative_parameter_change = None
-
-            for step in range(adam_max_steps):
-                w_current = parameter.detach().numpy().copy()
-
-                # Recompute weights AND divisors at every Adam step.
-                diagnostics = _func(w_current, return_diagnostics=True)
-                weights = (diagnostics["a1"], diagnostics["a2"])
-                normalizers = (
-                    diagnostics["normalizer_1"],
-                    diagnostics["normalizer_2"],
-                )
-
-                value, gradient = _func(
-                    w_current,
-                    task_weights=weights,
-                    task_normalizers=normalizers,
-                )
-
-                if not np.isfinite(value) or not np.all(np.isfinite(gradient)):
-                    raise FloatingPointError("Non-finite Adam objective or gradient")
-
-                optimizer.zero_grad(set_to_none=True)
-                parameter.grad = torch.as_tensor(
-                    gradient.copy(), dtype=parameter.dtype
-                )
-                optimizer.step()
-
-                with torch.no_grad():
-                    parameter.copy_(torch.clamp(parameter, min=lower, max=upper))
-                adam_updates += 1
-                if adam_updates % 100 == 0:
-                    checkpoint_new = parameter.detach().numpy().copy()
-                    relative_parameter_change = float(
-                        np.linalg.norm(checkpoint_new - checkpoint_w)
-                        / max(1.0, np.linalg.norm(checkpoint_w))
-                    )
-                    stable_checks = (
-                        stable_checks + 1
-                        if relative_parameter_change < inner_param_tol else 0
-                    )
-                    checkpoint_w = checkpoint_new
-                    if stable_checks >= 3:
-                        inner_converged = True
-                        break
-
-            w_new = parameter.detach().numpy().copy()
-
-            # Evaluate diagnostics at the returned point.
-            diagnostics = _func(w_new, return_diagnostics=True)
-            value, gradient = _func(
-                w_new,
-                task_weights=(diagnostics["a1"], diagnostics["a2"]),
-                task_normalizers=(diagnostics["normalizer_1"], diagnostics["normalizer_2"]),
-            )
-            if not np.isfinite(value) or not np.all(np.isfinite(gradient)):
-                raise FloatingPointError("Non-finite final Adam objective or gradient")
+            sol = _minimize_finite(_func, w_est, bnds)
+            w_new = sol.x
             h_new, _ = _h(_adj(w_new))
-            cosine = diagnostics["gradient_cosine"]
-            cosine_text = "undefined" if cosine is None else f"{cosine:.3f}"
-            stop_reason = "parameter_stable" if inner_converged else "budget_exhausted"
-            change_text = (
-                "unchecked" if relative_parameter_change is None
-                else f"{relative_parameter_change:.3e}"
-            )
+            inner_converged = bool(sol.success)
+            diagnostics = _func(w_new, return_diagnostics=True)
             print(
-                f"Adam [{loss_type}] stage={outer_iter + 1} attempt={inner_attempt} "
-                f"steps={adam_updates} stop={stop_reason} "
-                f"h={h_new:.3e} rho={rho:.1e} "
-                f"param_change={change_text} stable_checks={stable_checks}/3 "
-                f"L1={diagnostics['L1']:.4g} L2={diagnostics['L2']:.4g} "
-                f"a=({diagnostics['a1']:.3g},{diagnostics['a2']:.3g}) "
-                f"grad_norms=({diagnostics['norm_g1']:.3e},"
-                f"{diagnostics['norm_g2']:.3e}) cos={cosine_text}",
+                f"L-BFGS-B [{loss_type}] stage={outer_iter + 1} attempt={inner_attempt} "
+                f"nit={sol.nit} nfev={sol.nfev} success={inner_converged} "
+                f"stop={sol.message} h={h_new:.3e} rho={rho:.1e} "
+                f"projected_gradient_inf={sol.projected_gradient_inf:.3e} "
+                f"L1={diagnostics['L1']:.4g} L2={diagnostics['L2']:.4g}",
                 flush=True,
             )
             W_new = _adj(w_new)
@@ -1510,52 +1350,123 @@ def fit_order_initialization(X, lambda1, loss_type, exist_path_pairs, **solver_o
 if __name__ == '__main__':
     from tempfile import NamedTemporaryFile
 
-    parser = argparse.ArgumentParser(description="Add W_init to an existing order-init result")
-    parser.add_argument('-s', '--seed', type=int, default=0)
-    parser.add_argument('-d', '--num_nodes', type=int, default=10)
-    parser.add_argument('-e', '--num_edges_per_node', type=int, default=1)
-    parser.add_argument('-g', '--graph_type', default="ER")
+    parser = argparse.ArgumentParser(prog='linear NOTEARS with prior knowledge',)
+
+    parser.add_argument('-s', '--seed', dest='s',  default=0, type=int)
+    parser.add_argument('-d', '--num_nodes', dest='d', default=10, type=int)
+    parser.add_argument('-e', '--num_edges_per_node', dest='e', default=1, type=int)
+    parser.add_argument('-g', '--graph_type', dest='g', default="ER", type=str)
     parser.add_argument('-l', '--loss_type', choices=('l2',), default='l2')
-    parser.add_argument('-n', '--noise', default="gauss")
-    parser.add_argument('-p', '--prior_type', default="mix")
-    parser.add_argument('-r', '--prior_rate', type=float, default=0.25)
-    parser.add_argument('-t', '--w_threshold', type=float, default=0.3,
-                        help="Accepted for batch compatibility. W_init is saved unpruned.")
-    parser.add_argument('-ep', '--epsilon', type=float, default=1e-1)
-    parser.add_argument('-c', '--compare', action='store_true')
-    parser.add_argument('-tau', '--tau', type=float, default=1.0)
-    parser.add_argument('--result-file', type=Path, help="Existing result JSON to update")
+    parser.add_argument('-n', '--noise', dest='n', default="gauss", type=str)
+    parser.add_argument('-p', '--prior_type', dest='p', default="mix", type=str)
+    parser.add_argument('-r', '--prior_rate', dest='r', default=0.25, type=float)
+    parser.add_argument('-t', '--w_threshold', dest='t', default=0.3, type=float)
+    parser.add_argument('-ep', '--epsilon', dest='ep', default=1e-1, type=float)
+    parser.add_argument('-c', '--compare', dest='c', action='store_true', default=False)
+    parser.add_argument('-tau', '--tau', dest='tau', default=1.0, type=float)
     args = parser.parse_args()
 
-    epsilon = 10 if args.compare else args.epsilon
-    mode = "mtl_compare" if args.compare else "mtl_adam"
+    from prior_notears import utils
+    utils.set_random_seed(args.s)
+    n, d, s0, graph_type, sem_type = 2000, args.d, args.e*args.d, args.g, args.n
+    B_true = utils.simulate_dag(d, s0, graph_type)
+    print(f"Run: seed={args.s} d={d} graph={graph_type} edges={s0} tau={args.tau}", flush=True)
+    W_true = utils.simulate_parameter(B_true)
+    epsilon = 10 if args.c else args.ep
+    mode = "mtl_compare_lbfgsb" if args.c else "mtl_lbfgsb"
     filename = (
-        f"linear_{args.prior_type}_{args.graph_type}{args.num_edges_per_node}_"
-        f"d{args.num_nodes}_{args.noise}_rate{args.prior_rate}_epsilon{epsilon}_"
-        f"seed{args.seed}_tau{args.tau}_{mode}_l2_unit_noise_order_init.json"
+        f"linear_{args.p}_{graph_type}{args.e}_d{d}_{sem_type}_rate{args.r}_"
+        f"epsilon{epsilon}_seed{args.s}_tau{args.tau}_{mode}_l2_unit_noise_order_init.json"
     )
+
+    X = utils.simulate_linear_sem(W_true, n, sem_type)
+    X_std = StandardScaler().fit_transform(X)
+    correct_priors = utils.generate_prior_knowledge(
+        B_true, prior_rate=args.r, prior_type=args.p, random_state=args.s,
+    )
+    print("Fully correct prior counts:",
+          {key: len(pairs) for key, pairs in correct_priors.items()}, flush=True)
+    evaluation_status = {}
+    results = {
+        "B_true": B_true.tolist(),
+        "W_true": W_true.tolist(),
+        "X": X.tolist(),
+        "X_std": X_std.tolist(),
+        "varsortability_score": varsortability(X_std, W_true),
+        "prior_knowledge_perfect_l2": correct_priors,
+        "evaluation_status": evaluation_status,
+    }
+
+    labels = ("no_prior_l2", "prior_perfect_l2")
+    for label in labels:
+        print(f">>> Evaluation [{label}] <<<", flush=True)
+        start_time = time.perf_counter()
+        if label == "no_prior_l2":
+            W_est = linear.notears_linear(
+                X_std, lambda1=0.1, loss_type="l2", w_threshold=args.t,
+            )
+        else:
+            W_init, init_success = fit_order_initialization(
+                X_std, 0.1, "l2", correct_priors.get("exist_path_pairs", []),
+            )
+            results["W_init"] = W_init.tolist()
+            results["W_init_success"] = bool(init_success)
+            W_est, success = notears_linear(
+                X_std, lambda1=0.1, loss_type="l2", tau=args.tau,
+                prior_knowledge=correct_priors, w_threshold=args.t,
+                epsilon=args.ep, compare=args.c, W_init=W_init,
+            )
+            results["sol_success_perfect_l2"] = bool(success)
+
+        results[f"running_time_{label}"] = time.perf_counter() - start_time
+        results[f"W_est_{label}"] = W_est.tolist()
+        results[f"h_est_{label}"] = float(_h(W_est)[0])
+        results[f"loss_{label}"] = float(_loss(W_est, X_std, "l2")[0])
+        results[f"constraint_values_{label}"] = evaluate_prior_values(
+            W_est, correct_priors, args.t, args.c,
+        )
+        satisfied, percentage = utils.evaluate_prior_knowledge(W_est, correct_priors)
+        results[f"satisfied_{label}"] = satisfied
+        results[f"satisfied_percentage_{label}"] = percentage
+        try:
+            if not utils.is_dag(W_est):
+                raise ValueError("Estimated graph contains a directed cycle")
+            results[f"acc_{label}"] = utils.count_accuracy(B_true, W_est != 0)
+        except Exception as exc:
+            evaluation_status[label] = {
+                "status": "failed", "error_type": type(exc).__name__, "error": str(exc),
+            }
+            print(f"Evaluation failed: {exc}")
+        else:
+            evaluation_status[label] = {"status": "completed"}
+
     project_root = Path(__file__).resolve().parent.parent
-    output_path = args.result_file or project_root / f"linear_{args.prior_type}" / filename
+    output_dir = project_root / f"linear_{args.p}"
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-    with output_path.open() as file:
-        results = json.load(file)
-    X_std = np.asarray(results["X_std"], dtype=float)
-    path_pairs = results["prior_knowledge_perfect_l2"].get("exist_path_pairs", [])
-    W_init, success = fit_order_initialization(X_std, 0.1, args.loss_type, path_pairs)
-    results["W_init"] = W_init.tolist()
-    results["W_init_success"] = bool(success)
+    output_path = output_dir / filename
 
-    file = NamedTemporaryFile(mode="w", dir=output_path.parent, delete=False)
+    file = NamedTemporaryFile(mode="w", dir=output_dir, delete=False)
     temporary_path = Path(file.name)
     try:
         with file:
             json.dump(results, file, indent=4)
-        temporary_path.chmod(output_path.stat().st_mode & 0o777)
+        if output_path.exists():
+            temporary_path.chmod(output_path.stat().st_mode & 0o777)
         temporary_path.replace(output_path)
     finally:
         temporary_path.unlink(missing_ok=True)
 
-    print(f"W_init saved to: {output_path}", flush=True)
+    for label in labels:
+        metrics = results.get(f"acc_{label}")
+        if isinstance(metrics, dict):
+            satisfaction = results.get(f"satisfied_percentage_{label}", float("nan"))
+            print(
+                f"Result [{label}]: F1={metrics['f1']:.4f} "
+                f"SHD={metrics['shd']} satisfaction={satisfaction:.1f}%",
+                flush=True,
+            )
+    print(f"Results saved to: {output_path}")
 
 #### check gradient of prior knowledge constraints
 
