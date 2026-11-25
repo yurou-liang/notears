@@ -48,13 +48,14 @@ wait_for_one() {
 
 NODE_COUNTS=(10 20 30 40 50)
 EPSILONS=(0.05)
+LAMBDA1_VALUES=(0.05)
 # TAU_SETTINGS=(1.0 3.0 10.0 15.0) #"1.0 0.5" "1.0 0.0"
 NOISE_TYPES=(gumbel)
 PRIOR_TYPES=(
     # forbid_edge_pairs
     # forbid_path_pairs
     # forbid_trek_pairs
-    # exist_edge_pairs
+    exist_edge_pairs
     exist_path_pairs
     # exist_trek_pairs
     # mix
@@ -71,6 +72,17 @@ GRAPH_SETTINGS=(
 )
 # Decimal spelling matches the float values in Python output filenames.
 # EPSILONS=(0.1 0.01 0.001 0.0001)
+for index in "${!LAMBDA1_VALUES[@]}"; do
+    LAMBDA1_VALUES[$index]=$("${PYTHON_BIN}" -c '
+import math
+import sys
+
+value = float(sys.argv[1])
+if not math.isfinite(value) or value < 0:
+    sys.exit("--lambda1 must be finite and nonnegative")
+print(value)
+' "${LAMBDA1_VALUES[$index]}")
+done
 cd "${PROJECT_ROOT}"
 
 for seed in {0..9}; do
@@ -85,36 +97,39 @@ for seed in {0..9}; do
                 for prior_type in "${PRIOR_TYPES[@]}"; do
                     for prior_rate in "${PRIOR_RATES[@]}"; do
                         for epsilon in "${EPSILONS[@]}"; do
-                            echo "Running seed=${seed} d=${d} graph=${graph_type}${edge_factor} noise=${noise_type} prior=${prior_type} rate=${prior_rate} epsilon=${epsilon}"
+                            for lambda1 in "${LAMBDA1_VALUES[@]}"; do
+                                echo "Running seed=${seed} d=${d} graph=${graph_type}${edge_factor} noise=${noise_type} prior=${prior_type} rate=${prior_rate} epsilon=${epsilon} lambda1=${lambda1}"
 
-                            output_dir="${PROJECT_ROOT}/linear_${prior_type}"
-                            log_dir="${output_dir}/log"
-                            result_stem="linear_${prior_type}_${graph_type}${edge_factor}_d${d}_${noise_type}_rate${prior_rate}_epsilon${epsilon}_seed${seed}_tau1.0_mtl_lbfgsb_l2_unit_noise_order_init"
-                            result_file="${output_dir}/${result_stem}.json"
-                            log_file="${log_dir}/${result_stem}.log"
-                            mkdir -p "${output_dir}" "${log_dir}"
+                                output_dir="${PROJECT_ROOT}/linear_${prior_type}"
+                                log_dir="${output_dir}/log"
+                                result_stem="linear_${prior_type}_${graph_type}${edge_factor}_d${d}_${noise_type}_rate${prior_rate}_epsilon${epsilon}_seed${seed}_tau1.0_mtl_lbfgsb_l2_unit_noise_lambda1${lambda1}_order_init"
+                                result_file="${output_dir}/${result_stem}.json"
+                                log_file="${log_dir}/${result_stem}.log"
+                                mkdir -p "${output_dir}" "${log_dir}"
 
-                            (
-                                "${PYTHON_BIN}" -u -m prior_notears.linear_order_init \
-                                    --seed "${seed}" \
-                                    --num_nodes "${d}" \
-                                    --num_edges_per_node "${edge_factor}" \
-                                    --graph_type "${graph_type}" \
-                                    --noise "${noise_type}" \
-                                    --prior_type "${prior_type}" \
-                                    --prior_rate "${prior_rate}" \
-                                    --epsilon "${epsilon}" \
-                                    > "${log_file}" 2>&1
+                                (
+                                    "${PYTHON_BIN}" -u -m prior_notears.linear_order_init \
+                                        --seed "${seed}" \
+                                        --num_nodes "${d}" \
+                                        --num_edges_per_node "${edge_factor}" \
+                                        --graph_type "${graph_type}" \
+                                        --noise "${noise_type}" \
+                                        --prior_type "${prior_type}" \
+                                        --prior_rate "${prior_rate}" \
+                                        --epsilon "${epsilon}" \
+                                        --lambda1 "${lambda1}" \
+                                        > "${log_file}" 2>&1
 
-                                if [[ ! -f "${result_file}" ]]; then
-                                    echo "Expected result file was not created: ${result_file}" >&2
-                                    exit 1
+                                    if [[ ! -f "${result_file}" ]]; then
+                                        echo "Expected result file was not created: ${result_file}" >&2
+                                        exit 1
+                                    fi
+                                ) &
+                                pids[$!]="${log_file}"
+                                if (( ${#pids[@]} >= MAX_JOBS )); then
+                                    wait_for_one
                                 fi
-                            ) &
-                            pids[$!]="${log_file}"
-                            if (( ${#pids[@]} >= MAX_JOBS )); then
-                                wait_for_one
-                            fi
+                            done
                         done
                     done
                 done

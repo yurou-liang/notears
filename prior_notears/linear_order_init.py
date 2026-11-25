@@ -232,16 +232,14 @@ def _exist_paths(W, w_thres, path_pairs, coefficient=None, sharpness=50.0):
 
     return values, grad_W.reshape(-1)
 
-def _exist_paths2(W, w_thres, path_pairs,
-                sharpness=50.0, epsilon=10):
+def _exist_paths2(W, w_thres, path_pairs, epsilon=10):
     """Return the sum of masked missing-path penalties and its gradient.
 
     p = sum_{k=1}^d abs(W)^k, using matrix powers.
     b[i, j] is one iff no walk of length 1 through d exists in
     the thresholded adjacency (abs(W) >= w_thres).
-    The scalar value sums b * softplus(epsilon - p) over path_pairs.
-    w_thres is epsilon_0 in the mask; epsilon is the softplus margin.
-    sharpness=1 gives ordinary softplus.
+    The scalar value sums b * max(epsilon - p, 0) over path_pairs.
+    w_thres sets the mask threshold and epsilon sets the residual margin.
 
     Always return (value, gradient), with gradient shaped (W.size,).
     Empty path_pairs returns zero and a zero gradient. The hard mask has zero
@@ -270,12 +268,13 @@ def _exist_paths2(W, w_thres, path_pairs,
 
     b = ~reachable
     X = epsilon - p
-    penalties = b * softplus(X, sharpness)
+    penalties = b * np.maximum(X, 0.0)
     value = float(sum(penalties[i, j] for i, j in path_pairs))
 
     grad_p = np.zeros_like(W)
     for i, j in path_pairs:
-        grad_p[i, j] -= b[i, j] * sigmoid(sharpness * X[i, j])
+        if b[i, j] and X[i, j] > 0:
+            grad_p[i, j] -= 1.0
 
     # Reverse through P_k = P_{k-1} @ A and p = sum_k P_k.
     grad_A = np.zeros_like(W)
@@ -795,62 +794,6 @@ def notears_linear(X, lambda1, loss_type, tau, prior_knowledge=None, max_iter=10
 
         return values, grad_W.reshape(-1)
 
-    def _exist_paths2(W, w_thres, path_pairs,
-                  sharpness=50.0, epsilon=10):
-        """Return the sum of masked missing-path penalties and its gradient.
-
-        p = sum_{k=1}^d abs(W)^k, using matrix powers.
-        b[i, j] is one iff no walk of length 1 through d exists in
-        the thresholded adjacency (abs(W) >= w_thres).
-        The scalar value sums b * softplus(epsilon - p) over path_pairs.
-        w_thres is epsilon_0 in the mask; epsilon is the softplus margin.
-        sharpness=1 gives ordinary softplus.
-
-        Always return (value, gradient), with gradient shaped (W.size,).
-        Empty path_pairs returns zero and a zero gradient. The hard mask has zero
-        derivative away from threshold crossings and is generally discontinuous
-        at crossings. At W == 0, use zero as the abs subgradient.
-        """
-        W = np.asarray(W, dtype=float)
-        if W.ndim != 2 or W.shape[0] != W.shape[1]:
-            raise ValueError("W must be a square matrix")
-        if len(path_pairs) == 0:
-            return 0.0, np.zeros(W.size)
-
-        d = W.shape[0]
-        A = np.abs(W)
-        powers = [np.eye(d)]
-        p = np.zeros_like(W)
-        adjacency = A >= w_thres
-        reachable = np.zeros_like(adjacency)
-        walk = np.eye(d, dtype=bool)
-        for _ in range(d):
-            powers.append(powers[-1] @ A)
-            p += powers[-1]
-            # Boolean matrix products avoid overflow from counting walks.
-            walk = walk @ adjacency
-            reachable |= walk
-
-        b = ~reachable
-        X = epsilon - p
-        penalties = b * softplus(X, sharpness)
-        value = float(sum(penalties[i, j] for i, j in path_pairs))
-
-        grad_p = np.zeros_like(W)
-        for i, j in path_pairs:
-            grad_p[i, j] -= b[i, j] * sigmoid(sharpness * X[i, j])
-
-        # Reverse through P_k = P_{k-1} @ A and p = sum_k P_k.
-        grad_A = np.zeros_like(W)
-        grad_power = np.zeros_like(W)
-        for k in range(d, 0, -1):
-            grad_power += grad_p
-            grad_A += powers[k - 1].T @ grad_power
-            grad_power = grad_power @ A.T
-
-        return value, (grad_A * np.sign(W)).reshape(-1)
-
-    
     def _forbid_trek(W, trek_pairs, coefficient=None):
         """Return trek penalties and optionally their weighted gradient."""
         W = np.asarray(W, dtype=float)
@@ -993,8 +936,7 @@ def notears_linear(X, lambda1, loss_type, tau, prior_knowledge=None, max_iter=10
         if compare and exist_path_pairs:
             # _exist_paths2 returns one aggregate scalar penalty.
             path_value, path_grad = _exist_paths2(
-                W, w_threshold, exist_path_pairs,
-                sharpness=sharpness, epsilon=10,
+                W, w_threshold, exist_path_pairs, epsilon=10,
             )
             values.append(np.atleast_1d(path_value))
             gradients.append(coefficient[offset] * path_grad)
@@ -1101,10 +1043,10 @@ def notears_linear(X, lambda1, loss_type, tau, prior_knowledge=None, max_iter=10
         tau_e = tau[:c_e.size]
         tau_i = tau[c_e.size:]
         residual = epsilon - i_value
-        c_i = softplus(residual, sharpness)
+        c_i = np.maximum(residual, 0.0)
         c = np.concatenate((c_e.reshape(-1), c_i.reshape(-1)))
         _, G_e = combined_equality_constraints(W, coefficient=tau_e)
-        coefficient = -tau_i * sigmoid(sharpness * residual)
+        coefficient = -tau_i * (residual > 0)
         _, G_i = combined_inequality_constraints(W, coefficient=coefficient)
         G_prior = G_e + G_i
 
@@ -1312,7 +1254,7 @@ def notears_linear(X, lambda1, loss_type, tau, prior_knowledge=None, max_iter=10
             W_new = _adj(w_new)
             c_e_new = combined_equality_constraints(W_new, coefficient=None)
             i_value_new = combined_inequality_constraints(W_new, coefficient=None)
-            c_i_new = softplus(epsilon - i_value_new, sharpness)
+            c_i_new = np.maximum(epsilon - i_value_new, 0.0)
             print("equality constraints:", c_e_new, flush=True)
             print("inequality constraints:", c_i_new, flush=True)
             if h_new > 0.25 * h:
@@ -1364,19 +1306,23 @@ if __name__ == '__main__':
     parser.add_argument('-ep', '--epsilon', dest='ep', default=1e-1, type=float)
     parser.add_argument('-c', '--compare', dest='c', action='store_true', default=False)
     parser.add_argument('-tau', '--tau', dest='tau', default=1.0, type=float)
+    parser.add_argument('--lambda1', default=0.1, type=float,
+                        help='L1 sparsity weight for initialization and both fits')
     args = parser.parse_args()
+    if not np.isfinite(args.lambda1) or args.lambda1 < 0:
+        parser.error("--lambda1 must be finite and nonnegative")
 
     from prior_notears import utils
     utils.set_random_seed(args.s)
     n, d, s0, graph_type, sem_type = 2000, args.d, args.e*args.d, args.g, args.n
     B_true = utils.simulate_dag(d, s0, graph_type)
-    print(f"Run: seed={args.s} d={d} graph={graph_type} edges={s0} tau={args.tau}", flush=True)
+    print(f"Run: seed={args.s} d={d} graph={graph_type} edges={s0} tau={args.tau} lambda1={args.lambda1}", flush=True)
     W_true = utils.simulate_parameter(B_true)
     epsilon = 10 if args.c else args.ep
     mode = "mtl_compare_lbfgsb" if args.c else "mtl_lbfgsb"
     filename = (
         f"linear_{args.p}_{graph_type}{args.e}_d{d}_{sem_type}_rate{args.r}_"
-        f"epsilon{epsilon}_seed{args.s}_tau{args.tau}_{mode}_l2_unit_noise_order_init.json"
+        f"epsilon{epsilon}_seed{args.s}_tau{args.tau}_{mode}_l2_unit_noise_lambda1{args.lambda1}_order_init.json"
     )
 
     X = utils.simulate_linear_sem(W_true, n, sem_type)
@@ -1395,6 +1341,7 @@ if __name__ == '__main__':
         "varsortability_score": varsortability(X_std, W_true),
         "prior_knowledge_perfect_l2": correct_priors,
         "evaluation_status": evaluation_status,
+        "lambda1": args.lambda1,
     }
 
     labels = ("no_prior_l2", "prior_perfect_l2")
@@ -1403,16 +1350,16 @@ if __name__ == '__main__':
         start_time = time.perf_counter()
         if label == "no_prior_l2":
             W_est = linear.notears_linear(
-                X_std, lambda1=0.1, loss_type="l2", w_threshold=args.t,
+                X_std, lambda1=args.lambda1, loss_type="l2", w_threshold=args.t,
             )
         else:
             W_init, init_success = fit_order_initialization(
-                X_std, 0.1, "l2", correct_priors.get("exist_path_pairs", []),
+                X_std, args.lambda1, "l2", correct_priors.get("exist_path_pairs", []),
             )
             results["W_init"] = W_init.tolist()
             results["W_init_success"] = bool(init_success)
             W_est, success = notears_linear(
-                X_std, lambda1=0.1, loss_type="l2", tau=args.tau,
+                X_std, lambda1=args.lambda1, loss_type="l2", tau=args.tau,
                 prior_knowledge=correct_priors, w_threshold=args.t,
                 epsilon=args.ep, compare=args.c, W_init=W_init,
             )
@@ -1554,11 +1501,11 @@ if __name__ == '__main__':
     #     tau_e = tau[:c_e.size]
     #     tau_i = tau[c_e.size:]
     #     residual = epsilon - i_value
-    #     c_i = softplus(residual, sharpness)
+    #     c_i = np.maximum(residual, 0.0)
     #     c = np.concatenate((c_e.reshape(-1), c_i.reshape(-1)))
     #     assert tau.shape == c.shape
     #     _, G_e = combined_equality_constraints(W, forbid_edge_pairs, forbid_path_pairs, forbid_trek_pairs, coefficient=tau_e)
-    #     coefficient = -tau_i * sigmoid(sharpness * residual)
+    #     coefficient = -tau_i * (residual > 0)
     #     _, G_i = combined_inequality_constraints(W, w_threshold, exist_edge_pairs, exist_path_pairs, exist_trek_pairs, coefficient=coefficient)
     #     G_prior = G_e + G_i
     #     p0, G_p0 = _p0(W)

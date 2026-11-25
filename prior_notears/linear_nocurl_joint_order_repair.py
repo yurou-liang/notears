@@ -218,19 +218,16 @@ def _exist_paths(W, w_thres, path_pairs, coefficient=None, sharpness=50.0):
     return values, grad_W.reshape(-1)
 
 
-def _exist_paths2(W, w_thres, path_pairs,
-                sharpness=50.0, epsilon=10):
-    """Return the sum of masked missing-path penalties and its gradient.
+def _exist_paths2(W, path_pairs, coefficient=None, *, w_thres, epsilon=10):
+    """Return masked missing-path penalties and optionally their weighted gradient.
 
     p = sum_{k=1}^d abs(W)^k, using matrix powers.
     b[i, j] is one iff no walk of length 1 through d exists in
     the thresholded adjacency (abs(W) >= w_thres).
-    The scalar value sums b * softplus(epsilon - p) over path_pairs.
-    w_thres is epsilon_0 in the mask; epsilon is the softplus margin.
-    sharpness=1 gives ordinary softplus.
+    Each penalty is b * max(epsilon - p, 0).
+    w_thres sets the mask threshold and epsilon sets the residual margin.
 
-    Always return (value, gradient), with gradient shaped (W.size,).
-    Empty path_pairs returns zero and a zero gradient. The hard mask has zero
+    The hard mask has zero
     derivative away from threshold crossings and is generally discontinuous
     at crossings. At W == 0, use zero as the abs subgradient.
     """
@@ -238,7 +235,9 @@ def _exist_paths2(W, w_thres, path_pairs,
     if W.ndim != 2 or W.shape[0] != W.shape[1]:
         raise ValueError("W must be a square matrix")
     if len(path_pairs) == 0:
-        return 0.0, np.zeros(W.size)
+        if coefficient is None:
+            return np.empty(0)
+        return np.empty(0), np.zeros(W.size)
 
     d = W.shape[0]
     A = np.abs(W)
@@ -256,12 +255,18 @@ def _exist_paths2(W, w_thres, path_pairs,
 
     b = ~reachable
     X = epsilon - p
-    penalties = b * softplus(X, sharpness)
-    value = float(sum(penalties[i, j] for i, j in path_pairs))
+    penalties = b * np.maximum(X, 0.0)
+    values = np.array([penalties[i, j] for i, j in path_pairs])
+    if coefficient is None:
+        return values
+    coefficient = np.asarray(coefficient, dtype=float)
+    if coefficient.shape != values.shape:
+        raise ValueError("Provide one coefficient per path pair")
 
     grad_p = np.zeros_like(W)
-    for i, j in path_pairs:
-        grad_p[i, j] -= b[i, j] * expit(sharpness * X[i, j])
+    for (i, j), weight in zip(path_pairs, coefficient):
+        if b[i, j] and X[i, j] > 0:
+            grad_p[i, j] -= weight
 
     # Reverse through P_k = P_{k-1} @ A and p = sum_k P_k.
     grad_A = np.zeros_like(W)
@@ -271,7 +276,7 @@ def _exist_paths2(W, w_thres, path_pairs,
         grad_A += powers[k - 1].T @ grad_power
         grad_power = grad_power @ A.T
 
-    return value, (grad_A * np.sign(W)).reshape(-1)
+    return values, (grad_A * np.sign(W)).reshape(-1)
 
 
 def _forbid_trek(W, trek_pairs, coefficient=None):
@@ -452,7 +457,7 @@ def notears_linear(
     proposed penalty increase. Soft mode holds phi fixed.
     The prior penalties use the same zero-based node pairs as linear.py.
     Soft mode weights them by tau. Hard mode uses an augmented Lagrangian
-    for the sum of nonnegative prior violations and checks the pruned graph.
+    with separate multipliers for each prior and checks the pruned graph.
     If return_potentials is true, append the initial and final phi to the result.
     If return_unthresholded is true, append the weights before thresholding.
     """
@@ -494,7 +499,9 @@ def notears_linear(
         (partial(_exist_trek, sharpness=sharpness),
          prior_knowledge.get("exist_trek_pairs", [])),
     ]
-    if not compare:
+    if compare:
+        equality_terms.append((partial(_exist_paths2, w_thres=w_threshold), exist_paths))
+    else:
         inequality_terms.append((partial(_exist_paths, sharpness=sharpness), exist_paths))
 
     def adjacency(weights):
@@ -518,7 +525,7 @@ def notears_linear(
 
         return value, gradient.reshape(W.shape)
 
-    def prior_violation(W, hard=False):
+    def prior_violation(W):
         value = 0.0
         gradient = np.zeros_like(W)
         for penalty, pairs in equality_terms:
@@ -527,23 +534,12 @@ def notears_linear(
                 value += values.sum()
                 gradient += derivative.reshape(W.shape)
 
-        if compare and len(exist_paths):
-            penalty, derivative = _exist_paths2(
-                W, w_threshold, exist_paths, sharpness=sharpness, epsilon=10,
-            )
-            value += penalty
-            gradient += derivative.reshape(W.shape)
-
         for constraint, pairs in inequality_terms:
             if len(pairs):
                 residual = epsilon - constraint(W, w_threshold, pairs)
-                if hard:
-                    positive = np.maximum(residual, 0.0)
-                    value += positive @ positive
-                    coefficient = -2.0 * positive
-                else:
-                    value += softplus(residual, sharpness).sum()
-                    coefficient = -expit(sharpness * residual)
+                value += np.maximum(residual, 0.0).sum()
+                # Choose the zero subgradient at an exactly satisfied margin.
+                coefficient = -np.asarray(residual > 0, dtype=float)
                 _, derivative = constraint(W, w_threshold, pairs, coefficient=coefficient)
                 gradient += derivative.reshape(W.shape)
         return value, gradient
@@ -569,7 +565,46 @@ def notears_linear(
     if op == "hard" and has_priors:
         from prior_notears.utils import evaluate_prior_knowledge
 
-        rho, alpha, previous_h = 1.0, 0.0, np.inf
+        rho_e = rho_i = 1.0
+        previous_e = previous_i = np.inf
+        equalities = [(term, pairs) for term, pairs in equality_terms if len(pairs)]
+        inequalities = [(term, pairs) for term, pairs in inequality_terms if len(pairs)]
+        alpha = np.zeros(sum(len(pairs) for _, pairs in equalities))
+        beta = np.zeros(sum(len(pairs) for _, pairs in inequalities))
+
+        def residuals(W):
+            c_e = np.concatenate([term(W, pairs) for term, pairs in equalities]) if equalities else np.empty(0)
+            c_i = np.concatenate([
+                epsilon - term(W, w_threshold, pairs) for term, pairs in inequalities
+            ]) if inequalities else np.empty(0)
+            return c_e, c_i
+
+        def augmented_prior(W):
+            c_e, c_i = residuals(W)
+            active_i = np.maximum(beta + rho_i * c_i, 0.0)
+            value = alpha @ c_e + 0.5 * rho_e * (c_e @ c_e)
+            value += ((active_i - beta) @ (active_i + beta)) / (2.0 * rho_i)
+            gradient = np.zeros(W.size)
+            offset = 0
+            coefficients_e = alpha + rho_e * c_e
+            for term, pairs in equalities:
+                end = offset + len(pairs)
+                _, derivative = term(W, pairs, coefficient=coefficients_e[offset:end])
+                gradient += derivative
+                offset = end
+            offset = 0
+            for term, pairs in inequalities:
+                end = offset + len(pairs)
+                _, derivative = term(W, w_threshold, pairs, coefficient=-active_i[offset:end])
+                gradient += derivative
+                offset = end
+            return value, gradient.reshape(W.shape)
+
+        def violation(c_e, c_i):
+            e = np.abs(c_e)
+            i = np.maximum(c_i, 0.0)
+            return np.linalg.norm(e), np.linalg.norm(i), e.max(initial=0.0), i.max(initial=0.0)
+
         joint_parameters = None
         pairs = np.triu_indices(phi.size, k=1)
         joint_bounds = [(0, None)] * (2 * len(pairs[0])) + [(None, None)] * (phi.size - 1)
@@ -578,22 +613,22 @@ def notears_linear(
             positive, negative = np.split(split, 2)
             W = adjacency(positive - negative)
             value, gradient = data_loss(W)
-            h, derivative = prior_violation(W, hard=True)
-            value += alpha * h + 0.5 * rho * h * h + l1_weight @ split
-            gradient += (alpha + rho * h) * derivative
+            penalty, derivative = augmented_prior(W)
+            value += penalty + l1_weight @ split
+            gradient += derivative
             active_gradient = gradient[active] * scales
             return value, np.concatenate((active_gradient, -active_gradient)) + l1_weight
 
         def joint_objective(parameters):
             W, l1_norm = _joint_adjacency(parameters, pairs, phi.size)
             value, gradient = data_loss(W)
-            h, derivative = prior_violation(W, hard=True)
-            value += alpha * h + 0.5 * rho * h * h + lambda1 * l1_norm
-            gradient += (alpha + rho * h) * derivative
+            penalty, derivative = augmented_prior(W)
+            value += penalty + lambda1 * l1_norm
+            gradient += derivative
             return value, _joint_adjacency(parameters, pairs, phi.size, gradient, lambda1)
 
-        h, _ = prior_violation(adjacency(np.zeros(scales.size)), hard=True)
-        converged = not scales.size and h <= h_tol
+        _, _, max_e, max_i = violation(*residuals(adjacency(np.zeros(scales.size))))
+        converged = not scales.size and max(max_e, max_i) <= h_tol
         if scales.size:
             for _ in range(max_iter):
                 while True:
@@ -605,28 +640,35 @@ def notears_linear(
                         sol = _minimize_finite(joint_objective, joint_parameters, joint_bounds)
                         joint_parameters = sol.x
                         W, _ = _joint_adjacency(joint_parameters, pairs, phi.size)
-                    h, _ = prior_violation(W, hard=True)
-                    if h <= h_tol or h <= 0.25 * previous_h or rho >= rho_max:
+                    c_e, c_i = residuals(W)
+                    norm_e, norm_i, max_e, max_i = violation(c_e, c_i)
+                    increase_e = max_e > h_tol and norm_e > 0.25 * previous_e and rho_e < rho_max
+                    increase_i = max_i > h_tol and norm_i > 0.25 * previous_i and rho_i < rho_max
+                    if not (increase_e or increase_i):
                         break
                     if joint_parameters is None:
-                        # Keep rho and alpha and warm-start from this fixed-phi solve.
+                        # Keep the penalties and multipliers for the first joint solve.
                         split_by_pair = []
                         for weights in (positive, negative):
                             directed = np.zeros_like(gaps)
                             directed[active] = weights
                             split_by_pair.append((directed + directed.T)[pairs])
                         joint_parameters = np.concatenate((*split_by_pair, phi[:-1]))
-                        print(f"Unfreezing phi before penalty increase (rho={rho:g}, alpha={alpha:g})",
+                        print(f"Unfreezing phi before penalty increase (rho_e={rho_e:g}, rho_i={rho_i:g})",
                               flush=True)
                         continue
-                    rho = min(10 * rho, rho_max)
+                    if increase_e:
+                        rho_e = min(10 * rho_e, rho_max)
+                    if increase_i:
+                        rho_i = min(10 * rho_i, rho_max)
                 if joint_parameters is None:
                     split_weights = sol.x
-                previous_h = h
-                alpha += rho * h
-                if h <= h_tol or rho >= rho_max:
-                    converged = bool(sol.success and h <= h_tol)
+                if max(max_e, max_i) <= h_tol:
+                    converged = bool(sol.success)
                     break
+                previous_e, previous_i = norm_e, norm_i
+                alpha += rho_e * c_e
+                beta = np.maximum(beta + rho_i * c_i, 0.0)
 
         if joint_parameters is None:
             positive, negative = np.split(split_weights, 2)
@@ -703,7 +745,7 @@ def evaluate_prior_values(W, prior_knowledge, w_threshold, compare = False):
 
         elif compare and prior_key == "exist_path_pairs":
             values = [
-                _exist_paths2(W, w_threshold, [pair])[0]
+                _exist_paths2(W, [pair], w_thres=w_threshold)[0]
                 for pair in pairs
             ]
 
@@ -752,7 +794,7 @@ if __name__ == '__main__':
     parser.add_argument('-c', '--compare', dest='c', action='store_true', default=False)
     parser.add_argument('-tau', '--tau', dest='tau', default=1.0, type=float)
     parser.add_argument("--lambda1", type=float, default=0.1,
-                        help="L1 penalty for the NoCurl fits")
+                        help="L1 penalty for initialization and the NoCurl fits")
     args = parser.parse_args()
     if not np.isfinite(args.lambda1) or args.lambda1 < 0:
         parser.error("--lambda1 must be finite and nonnegative")
@@ -802,7 +844,7 @@ if __name__ == '__main__':
         print(f">>> Linear hard initialization [{init_label}] <<<", flush=True)
         start_time = time.perf_counter()
         W_init, success = linear_hard.notears_linear(
-            X_std, lambda1=0.1, loss_type="l2", prior_knowledge=priors,
+            X_std, lambda1=args.lambda1, loss_type="l2", prior_knowledge=priors,
             w_threshold=args.t, epsilon=initialization_epsilon, compare=args.c,
         )
         elapsed = time.perf_counter() - start_time

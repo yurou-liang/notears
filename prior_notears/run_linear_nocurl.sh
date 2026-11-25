@@ -56,7 +56,7 @@ PRIOR_TYPES=(
     # forbid_path_pairs
     # forbid_trek_pairs
     exist_edge_pairs
-    # exist_path_pairs
+    exist_path_pairs
     # exist_trek_pairs
     # mix
 )
